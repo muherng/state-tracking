@@ -2,10 +2,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 from transformers import GPT2LMHeadModel, LlamaForCausalLM, GPTNeoXForCausalLM
 
-from utils.foobar import TransformerScanModel 
-#from dummy import Test
-#a = Test("test")
-#a.run()
+from utils.tree import TransformerScanModel 
 
 
 class GPT2MaskedLMHeadModel(GPT2LMHeadModel):
@@ -87,8 +84,10 @@ class ModelWithLayerTargetsMixin:
         hidden_states = outputs.hidden_states
         loss = 0
         loss_fct = nn.CrossEntropyLoss()
+        print("kwargs", kwargs)
         for i in range(len(hidden_states)):
             if f"layer_{i-1}_labels" in kwargs:
+                print('layer', i-1)
                 # move labels to correct device to enable model parallelism
                 # layer_i_logits = self.lm_head(hidden_states[i])
                 classification_logits = self.layer_classifiers[str(i-1)](hidden_states[i])
@@ -114,6 +113,7 @@ class GPT2ModelWithLayerTargets(ModelWithLayerTargetsMixin, GPT2LMHeadModel):
         self.init_layer_targets(config, layerwise_supervision_config)
     
     def forward(self, *args, **kwargs):
+        print('layer targets')
         return self.forward_with_layer_targets(*args, **kwargs)
 
 
