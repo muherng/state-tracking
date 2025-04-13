@@ -8,7 +8,8 @@ from transformers import (
     GPT2LMHeadModel, 
     GPT2Config,
     LlamaForCausalLM,
-    LlamaConfig
+    LlamaConfig,
+    GPT2Tokenizer
 )
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
 import torch
@@ -21,6 +22,7 @@ from utils.models import (
     PythiaModelWithLayerTargets
 )
 
+from utils.tree import TransformerScanModel
 
 def setup_tokenizer(model_name, state_tokens, action_tokens):
     """
@@ -35,7 +37,11 @@ def setup_tokenizer(model_name, state_tokens, action_tokens):
         tokenizer: The tokenizer
     """
     print("Loading tokenizer")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if model_name.lower() == "tree":
+        # Use GPT2's tokenizer as a fallback for your custom tree model.
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    else: 
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     tokenizer.pad_token = tokenizer.eos_token
     
@@ -69,7 +75,29 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
     
     if model_name:
         # Determine model configuration and class
-        if "gpt" in model_name.lower():
+        if "tree" in model_name.lower():
+            config = GPT2Config(
+                vocab_size=tokenizer.vocab_size,
+                n_positions=1024,
+                n_embd=256,
+                n_layer=6,
+                n_head=4,
+                dropout=0.1
+            )
+            model = TransformerScanModel(config, chunk_size=10,
+                                        T1_num_layers=6, T2_num_layers=6)
+        elif "gpt2" in model_name.lower():
+            config = GPT2Config(
+                vocab_size=tokenizer.vocab_size,  # match your tokenizer
+                n_positions=1024,
+                n_embd=256,
+                n_layer=6,
+                n_head=4,
+                dropout=0.1
+                # You can adjust additional hyperparameters here if needed.
+            )
+            model = GPT2LMHeadModel(config)
+        elif "gpt" in model_name.lower():
             config_class = GPT2Config
             model_class = GPT2ModelWithLayerTargets if use_custom_models else GPT2LMHeadModel
         elif "pythia" in model_name.lower():
@@ -100,7 +128,11 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
                 print(f"Warning: Found subdirectories in {output_dir}, but none match the expected 'checkpoint-NUMBER' format.")
     
     # Load or create model
-    if checkpoint_path:
+    no_pretrain = True
+    checkpoint_path = None
+    if "tree" in model_name.lower() or "gpt2" in model_name.lower():
+        print('Model class: ', model_name.lower())
+    elif checkpoint_path:
         print(f"Loading model from checkpoint: {checkpoint_path}")
         if use_custom_models:
             model = model_class.from_pretrained(
@@ -114,7 +146,9 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
     elif no_pretrain:
         # Initialize a new model with random weights
         print("Initializing model with random weights")
+        import json
         config = config_class.from_pretrained(model_name)
+        print("Config details:\n", json.dumps(config.to_dict(), indent=2))
         if use_custom_models:
             config.torch_dtype = torch.bfloat16 if use_bfloat16 else torch.float32
             model = model_class(config, layerwise_supervision_config=layerwise_supervision_config)

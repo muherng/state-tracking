@@ -238,12 +238,18 @@ class TransformerScanModel(nn.Module):
         self.T2 = T2(config, num_layers=T2_num_layers)
         self.T2_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
     
+    def resize_token_embeddings(self, new_vocab_size):
+        # Resize the embedding layer in T0
+        self.T0.wte = nn.Embedding(new_vocab_size, self.config.n_embd)
+        self.vocab_size = new_vocab_size
+        self.T2_head = nn.Linear(self.config.n_embd, new_vocab_size, bias=False)
+    
     def get_causal_mask(self, seq_length, device):
         mask = torch.tril(torch.ones(seq_length, seq_length, device=device)).unsqueeze(0).unsqueeze(0)
         mask = (1.0 - mask) * -10000.0
         return mask
 
-    def forward(self, input_ids, labels=None):
+    def forward(self, input_ids, labels=None, **kwargs):
         """
         input_ids: (batch, seq_length), where seq_length is a multiple of chunk_size.
         Computes prefix states via a vectorized Blelloch scan and uses them for autoregressive prediction.

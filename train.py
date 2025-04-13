@@ -31,7 +31,7 @@ def parse_arguments():
         "gpt2", "gpt2-large", "gpt2-medium", "gpt2-xl", "distilgpt2",
         "EleutherAI/pythia-70M", "EleutherAI/pythia-160M", "EleutherAI/pythia-410M",
         "EleutherAI/pythia-1B", "EleutherAI/pythia-1.4B", "EleutherAI/pythia-2.8B",
-        "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B",
+        "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B","tree"
     ])
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--output_dir", type=str, default="checkpoints")

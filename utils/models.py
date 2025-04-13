@@ -5,6 +5,7 @@ from transformers import GPT2LMHeadModel, LlamaForCausalLM, GPTNeoXForCausalLM
 from utils.tree import TransformerScanModel 
 
 
+
 class GPT2MaskedLMHeadModel(GPT2LMHeadModel):
     """GPT2 model with masked language modeling head for selective loss computation."""
     
@@ -84,7 +85,6 @@ class ModelWithLayerTargetsMixin:
         hidden_states = outputs.hidden_states
         loss = 0
         loss_fct = nn.CrossEntropyLoss()
-        print("kwargs", kwargs)
         for i in range(len(hidden_states)):
             if f"layer_{i-1}_labels" in kwargs:
                 print('layer', i-1)
@@ -113,8 +113,8 @@ class GPT2ModelWithLayerTargets(ModelWithLayerTargetsMixin, GPT2LMHeadModel):
         self.init_layer_targets(config, layerwise_supervision_config)
     
     def forward(self, *args, **kwargs):
-        print('layer targets')
-        return self.forward_with_layer_targets(*args, **kwargs)
+        loss,outputs = self.forward_with_layer_targets(*args, **kwargs)
+        return loss, outputs
 
 
 class LlamaModelWithLayerTargets(ModelWithLayerTargetsMixin, LlamaForCausalLM):
@@ -137,3 +137,26 @@ class PythiaModelWithLayerTargets(ModelWithLayerTargetsMixin, GPTNeoXForCausalLM
     
     def forward(self, *args, **kwargs):
         return self.forward_with_layer_targets(*args, **kwargs)
+    
+
+class TreeModel(TransformerScanModel):
+    """Tree model with direct output supervision."""
+    
+    def __init__(self, config):
+        super().__init__(config)
+    
+    def forward(self, input_ids,
+        attention_mask=None,
+        labels=None,
+        **kwargs):
+        outputs = super().forward(input_ids, attention_mask=attention_mask, labels=None, output_hidden_states=True, return_dict=True)
+        hidden_states = outputs.hidden_states
+        loss = 0
+        loss_fct = nn.CrossEntropyLoss()
+
+        # final logits
+        final_logits = outputs.logits
+        shift_logits = final_logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        loss += loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        return loss, outputs
