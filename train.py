@@ -3,7 +3,7 @@ import os
 import json
 import argparse
 import numpy as np
-#import wandb
+import wandb
 import random
 
 from transformers import (
@@ -114,7 +114,6 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False):
             full_dataset, 
             [train_size, total_size - train_size]
         )
-    
     print("Train dataset size:", len(train_dataset))
     print("Eval dataset size:", len(eval_dataset))
     
@@ -124,7 +123,7 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False):
 def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator):
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
-    #wandb.init(project="state-tracking", name=args.output_dir)
+    wandb.init(project="state-tracking", name=args.output_dir)
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         overwrite_output_dir=True,
@@ -223,6 +222,8 @@ def main():
     
     # Prepare dataset
     train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
+    #print('train_dataset: ', train_dataset[0]["story"])
+    #print('train_dataset: ', train_dataset[0]["state_seq"])
     
     # Set up trainer
     trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)

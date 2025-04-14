@@ -226,9 +226,9 @@ def compute_parity(permutation, num_items=None) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-items", type=int, default=3, choices=[3, 5], help="Number of items (3 or 5)")
-    parser.add_argument("--story-length", type=int, default=100, help="Number of steps per story")
+    parser.add_argument("--story-length", type=int, default=512, help="Number of steps per story")
     parser.add_argument("--data-dir", type=str, default="S3_data", help="Directory to write stories to")
-    parser.add_argument("--num-stories", type=int, default=1000000, help="Number of stories to generate")
+    parser.add_argument("--num-stories", type=int, default=100000, help="Number of stories to generate")
     parser.add_argument("--train-ratio", type=float, default=0.999, help="Ratio of train to total data (e.g., 0.8 means 80% train, 20% test)")
     args = parser.parse_args()
 

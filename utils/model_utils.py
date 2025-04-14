@@ -79,14 +79,14 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
         if "tree" in model_name.lower():
             config = GPT2Config(
                 vocab_size=tokenizer.vocab_size,
-                n_positions=1024,
+                n_positions=4096,
                 n_embd=256,
                 n_layer=6,
                 n_head=4,
                 dropout=0.1
             )
-            model = TreeModel(config, chunk_size=2,
-                                        T1_num_layers=6, T2_num_layers=6)
+            model = TreeModel(config, chunk_size=512,
+                                        T1_num_layers=2, T2_num_layers=2)
         elif "gpt2" in model_name.lower():
             config = GPT2Config(
                 vocab_size=tokenizer.vocab_size,  # match your tokenizer
