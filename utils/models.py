@@ -102,6 +102,7 @@ class ModelWithLayerTargetsMixin:
         shift_logits = final_logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         loss += loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        print('labels: ', labels)
         return loss, outputs
 
 
@@ -142,20 +143,19 @@ class PythiaModelWithLayerTargets(ModelWithLayerTargetsMixin, GPTNeoXForCausalLM
 class TreeModel(TransformerScanModel):
     """Tree model with direct output supervision."""
     
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, chunk_size= 32, T1_num_layers = 1, T2_num_layers = 1):
+        super().__init__(config, chunk_size=chunk_size, T1_num_layers = T1_num_layers, T2_num_layers = T2_num_layers)
     
     def forward(self, input_ids,
         attention_mask=None,
         labels=None,
         **kwargs):
         outputs = super().forward(input_ids, attention_mask=attention_mask, labels=None, output_hidden_states=True, return_dict=True)
-        hidden_states = outputs.hidden_states
         loss = 0
         loss_fct = nn.CrossEntropyLoss()
 
         # final logits
-        final_logits = outputs.logits
+        final_logits = outputs["logits"]
         shift_logits = final_logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         loss += loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))

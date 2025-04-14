@@ -254,6 +254,7 @@ class TransformerScanModel(nn.Module):
         input_ids: (batch, seq_length), where seq_length is a multiple of chunk_size.
         Computes prefix states via a vectorized Blelloch scan and uses them for autoregressive prediction.
         """
+        #print('input_ids shape:', input_ids.shape)
         batch_size, seq_length = input_ids.shape
         num_chunks = seq_length // self.chunk_size
         
@@ -271,19 +272,14 @@ class TransformerScanModel(nn.Module):
         P = self.vectorized_prefix_scan(level0, dummy, debug=False)
         
         loss_fn = nn.CrossEntropyLoss()
-        total_loss = 0.0
         all_logits = []
         
         # --- Process chunk 0: standard autoregressive prediction ---
-        T2_input_0 = level0[0][:, :self.chunk_size - 1, :]  # (batch, chunk_size-1, hidden_dim)
+        T2_input_0 = level0[0][:, :self.chunk_size, :]  # (batch, chunk_size-1, hidden_dim)
         causal_mask_0 = self.get_causal_mask(T2_input_0.size(1), T2_input_0.device)
-        T2_out_0,_ = self.T2(T2_input_0, causal_mask=causal_mask_0)  # (batch, chunk_size-1, hidden_dim)
-        logits_chunk0 = self.T2_head(T2_out_0)  # (batch, chunk_size-1, vocab_size)
+        T2_out_0,_ = self.T2(T2_input_0, causal_mask=causal_mask_0)  # (batch, chunk_size, hidden_dim)
+        logits_chunk0 = self.T2_head(T2_out_0)  # (batch, chunk_size, vocab_size)
         all_logits.append(logits_chunk0)
-        target_chunk0 = chunks[:, 0, 1:]  # (batch, chunk_size-1)
-        loss_chunk0 = loss_fn(logits_chunk0.reshape(-1, self.vocab_size),
-                              target_chunk0.reshape(-1))
-        total_loss += loss_chunk0
         
         # --- Process chunks 1 to num_chunks-1 in parallel ---
         if num_chunks > 1:
@@ -294,39 +290,34 @@ class TransformerScanModel(nn.Module):
                 # Concatenate the prefix state P[:, i, :, :] (aggregation of chunks 0...i-1)
                 # with the T0 embedding of chunk i (excluding its last token).
                 prefix = P[:, i, :, :]  # (batch, chunk_size, hidden_dim)
-                current_emb = level0[i][:, :self.chunk_size - 1, :]  # (batch, chunk_size-1, hidden_dim)
+                current_emb = level0[i][:, :self.chunk_size, :]  # (batch, chunk_size-1, hidden_dim)
                 t2_input = torch.cat([prefix, current_emb], dim=1)  # (batch, 2*chunk_size-1, hidden_dim)
                 t2_inputs.append(t2_input)
-                targets.append(chunks[:, i, 1:])  # (batch, chunk_size-1)
             
-            # Stack T2 inputs along a new dimension: shape becomes (batch, num_chunks-1, 2*chunk_size-1, hidden_dim)
+            # Stack T2 inputs along a new dimension: shape becomes (batch, num_chunks-1, 2*chunk_size, hidden_dim)
             T2_inputs = torch.stack(t2_inputs, dim=1)
-            # Reshape to merge the batch and chunk dimensions: (batch*(num_chunks-1), 2*chunk_size-1, hidden_dim)
+            # Reshape to merge the batch and chunk dimensions: (batch*(num_chunks-1), 2*chunk_size, hidden_dim)
             T2_inputs = T2_inputs.view(-1, T2_inputs.size(2), T2_inputs.size(3))
-            seq_len_t2 = T2_inputs.size(1)  # this equals 2*chunk_size-1
+            seq_len_t2 = T2_inputs.size(1)  # this equals 2*chunk_size
             causal_mask = self.get_causal_mask(seq_len_t2, T2_inputs.device)
-            T2_out,_ = self.T2(T2_inputs, causal_mask=causal_mask)  # (batch*(num_chunks-1), 2*chunk_size-1, hidden_dim)
-            # For each T2 input, we only want to predict the tokens corresponding to the current chunk.
-            # That is, we take only the last (chunk_size-1) tokens.
-            T2_out = T2_out[:, - (self.chunk_size - 1):, :]  # (batch*(num_chunks-1), chunk_size-1, hidden_dim)
-            logits_chunks = self.T2_head(T2_out)  # (batch*(num_chunks-1), chunk_size-1, vocab_size)
-            # Reshape back to (batch, num_chunks-1, chunk_size-1, vocab_size)
-            logits_chunks = logits_chunks.view(batch_size, num_chunks - 1, self.chunk_size - 1, self.vocab_size)
+            T2_out,_ = self.T2(T2_inputs, causal_mask=causal_mask)  # (batch*(num_chunks-1), 2*chunk_size, hidden_dim)
+            # For each T2 input, we take the last chunk_size tokens to collect all the logits.
+            # That is, we take only the last chunk_size tokens.
+            T2_out = T2_out[:, - self.chunk_size:, :]  # (batch*(num_chunks-1), chunk_size, hidden_dim)
+            logits_chunks = self.T2_head(T2_out)  # (batch*(num_chunks-1), chunk_size, vocab_size)
+            # Reshape back to (batch, num_chunks-1, chunk_size, vocab_size)
+            logits_chunks = logits_chunks.view(batch_size, num_chunks - 1, self.chunk_size, self.vocab_size)
             all_logits.append(logits_chunks)
-            
-            # Similarly, stack targets for chunks 1 to num_chunks-1: shape (batch, num_chunks-1, chunk_size-1)
-            targets = torch.stack(targets, dim=1)
-            loss_chunks = loss_fn(logits_chunks.reshape(-1, self.vocab_size),
-                                  targets.reshape(-1))
-            total_loss += loss_chunks*(num_chunks-1)
-            #print("Chunk0 logits shape:", logits_chunk0.shape, "target shape:", target_chunk0.shape, "loss_chunk0:", loss_chunk0.item())
-            #print("Parallel T2 inputs shape:", T2_inputs.shape)
-            #print("T2_out shape:", T2_out.shape)
-            #print("Logits_chunks shape:", logits_chunks.shape, "Targets shape:", targets.shape, "loss_chunks:", loss_chunks.item())
         
-        total_loss = total_loss / num_chunks
-        total_loss = total_loss
-        return CausalLMOutput(loss=total_loss, logits=all_logits[-1])
+            all_logits_1_flat = all_logits[1].view(batch_size, -1, self.vocab_size)
+            final_logits = torch.cat([all_logits[0], all_logits_1_flat], dim=1)  # (batch, num_chunks*chunk_size, vocab_size)
+        #print('final logits shape:', final_logits.shape)
+        else: 
+            # If num_chunks == 1, we only have the first chunk.
+            final_logits = all_logits[0]
+        outputs = {}
+        outputs["logits"] = final_logits
+        return outputs
     
     
     def combine(self, x, y):

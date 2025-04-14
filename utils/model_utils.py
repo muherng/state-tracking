@@ -19,7 +19,8 @@ import os
 from utils.models import (
     GPT2ModelWithLayerTargets,
     LlamaModelWithLayerTargets,
-    PythiaModelWithLayerTargets
+    PythiaModelWithLayerTargets,
+    TreeModel
 )
 
 from utils.tree import TransformerScanModel
@@ -84,7 +85,7 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
                 n_head=4,
                 dropout=0.1
             )
-            model = TransformerScanModel(config, chunk_size=10,
+            model = TreeModel(config, chunk_size=2,
                                         T1_num_layers=6, T2_num_layers=6)
         elif "gpt2" in model_name.lower():
             config = GPT2Config(
@@ -167,6 +168,7 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
             model = model_class.from_pretrained(model_name)
     
     # Resize token embeddings to match tokenizer
+    print('len tokenizer: ', len(tokenizer))
     model.resize_token_embeddings(len(tokenizer))
     
     # Set up precision
