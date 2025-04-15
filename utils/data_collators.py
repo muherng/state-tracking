@@ -68,6 +68,8 @@ class DataCollatorForLanguageModelingWithDirectSupervision:
                 " ".join([converter[tuple(item)] for item in example[self.label_key]])
                 for example in examples
             ]
+            #print('inputs:', examples[0]["story"])
+            #print('label_seq: ', examples[0][self.label_key])
             batch["labels"] = self.tokenizer(
                 label_seq,
                 padding='longest',
@@ -77,6 +79,8 @@ class DataCollatorForLanguageModelingWithDirectSupervision:
             )["input_ids"]
             # make same shape as input_ids
             batch["labels"] = batch["labels"][:, :batch["input_ids"].size(1)]
+            #print('batch["input_ids"]:', batch["input_ids"])
+            #print('batch["labels"]:', batch["labels"])
         
         # Add layerwise supervision if needed
         if self.layerwise_intermediate_keys is not None:

@@ -270,12 +270,25 @@ class TransformerScanModel(nn.Module):
         # Compute prefix states using the vectorized scan.
         # P: (batch, num_chunks+1, chunk_size, hidden_dim)
         P = self.vectorized_prefix_scan(level0, dummy, debug=False)
+
+        expected_dummy = dummy[0]
+        actual_dummy = P[:, 0, :, :]
+        assert torch.allclose(actual_dummy, expected_dummy, atol=1e-4), (
+            "Assert failed: P[:,0,:,:] does not match dummy"
+        )
+        debug = False
+        if debug: 
+            expected = level0[0][:,:self.chunk_size,:]
+            actual = P[:, 1, :, :]
+            assert torch.allclose(actual, expected, atol=1e-4), (
+                "Assert failed: P[:,1,:,:] does not match level0[0][:,:self.chunk_size,:]"
+            )
         
         loss_fn = nn.CrossEntropyLoss()
         all_logits = []
         
         # --- Process chunk 0: standard autoregressive prediction ---
-        T2_input_0 = level0[0][:, :self.chunk_size, :]  # (batch, chunk_size-1, hidden_dim)
+        T2_input_0 = level0[0][:, :self.chunk_size, :]  # (batch, chunk_size, hidden_dim)
         causal_mask_0 = self.get_causal_mask(T2_input_0.size(1), T2_input_0.device)
         T2_out_0,_ = self.T2(T2_input_0, causal_mask=causal_mask_0)  # (batch, chunk_size, hidden_dim)
         logits_chunk0 = self.T2_head(T2_out_0)  # (batch, chunk_size, vocab_size)
@@ -354,23 +367,64 @@ class TransformerScanModel(nn.Module):
             state_tensor = torch.cat([state_tensor, pad_tensor], dim=1)
             upsweep_mask[:, n:] = True
         T = state_tensor
+        if debug:
+            print("DEBUG: Initial States")
+            #print("  T0(chunk0):", states[0])
+            #print("  T0(chunk1):", states[1])
+            print("  state_tensor shape:", state_tensor.shape)
 
         # Upsweep (unchanged)
         L_levels = int(math.log2(M))
+        #print("L_levels: ", L_levels)
         for d in range(L_levels):
             step = 2 ** (d + 1)
             num_groups = M // step
             T = T.view(batch, num_groups, step, self.chunk_size, -1)
             left_idx = (2 ** d) - 1
             right_idx = step - 1
+
+            if debug:
+                print("\n[Upsweep Level {}]".format(d))
+                print("  step:", step, "num_groups:", num_groups)
+                print("  left_idx:", left_idx, "(should correspond to chunk0)")
+                print("  right_idx:", right_idx, "(position to store aggregated value)")
+                print("  T shape:", T.shape)
+                # Extract and print the groups
+                #print("  Group 0, left element (chunk0):", T[0, 0, left_idx])
+                #print("  Group 0, right element (chunk1):", T[0, 0, right_idx])
+
             left = T[:, :, left_idx]
             right = T[:, :, right_idx]
+
+            if debug:
+                for i in range(batch):
+                    assert torch.allclose(left[i, 0], states[0][i], atol=1e-4), (
+                        f"Upsweep Level {d}: For sample {i}, left block does not equal T0(chunk0)."
+                    )
+                print("  [Assert passed] Upsweep: Left block equals T0(chunk0) for all samples.")
             temp = torch.cat([left, right], dim=2).view(batch * num_groups, 2 * self.chunk_size, -1)
+
+            if debug:
+                print("  Concatenated (chunk0 || chunk1) shape:", temp.shape)
             out = self.T1(temp)
             if isinstance(out, tuple): out = out[0]
+            if debug:
+                print("  T1 output shape:", out.shape)
+                print("  T1 output (for group 0):", out[0])
             out = out.view(batch, num_groups, 2 * self.chunk_size, -1)[:, :, -self.chunk_size:]
+            if debug:
+                print("  Trimmed T1 output (should replace chunk1):", out)
             T[:, :, right_idx] = out
             T = T.view(batch, M, self.chunk_size, -1)
+
+            if debug:
+                for i in range(batch):
+                    assert torch.allclose(T[i, 0, :, :], states[0][i], atol=1e-4), (
+                        f"After upsweep Level {d}: For sample {i}, T[:,0,:,:] does not equal T0(chunk0)."
+                    )
+                print("  [Assert passed] Upsweep: T[:,0,:,:] unchanged and equals T0(chunk0) for all samples.")
+        
+
 
         # Downsweep: allocate new tree D and dummy-mask
         D = torch.zeros_like(T)

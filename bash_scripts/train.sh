@@ -34,9 +34,8 @@ python train.py \
     --num_items "$DATA_TYPE" \
     --data_dir "$DATA_DIR" \
     --output_dir "$OUTPUT_DIR" \
-    --batch_size 256 \
+    --batch_size 32 \
     --supervision_type direct_state \
-    --max_len 512 \
     --seed 42 \
     --epochs 20 \
     "$@"  # Pass any additional arguments

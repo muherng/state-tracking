@@ -9,8 +9,10 @@ from transformers import (
     GPT2Config,
     LlamaForCausalLM,
     LlamaConfig,
-    GPT2Tokenizer
+    GPT2Tokenizer,
+    PreTrainedTokenizerFast
 )
+from tokenizers import Tokenizer, models, pre_tokenizers, decoders
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXForCausalLM
 import torch
 import os
@@ -27,35 +29,61 @@ from utils.tree import TransformerScanModel
 
 def setup_tokenizer(model_name, state_tokens, action_tokens):
     """
-    Set up the tokenizer based on the model type.
+    Set up the tokenizer for the given model.
     
-    Args:
-        model_name: Name of the model to load tokenizer for
-        state_tokens: Dictionary of state -> state tokens
-        action_tokens: Dictionary of action -> action tokens
-        
-    Returns:
-        tokenizer: The tokenizer
+    For the "tree" model, build a minimal vocabulary containing only:
+      - Basic tokens: [PAD], [EOS], [UNK]
+      - The state tokens (from state_tokens)
+      - The action tokens (from action_tokens)
+      
+    For other models, load the tokenizer as usual.
     """
     print("Loading tokenizer")
     if model_name.lower() == "tree":
-        # Use GPT2's tokenizer as a fallback for your custom tree model.
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-    else: 
+        # Create a minimal vocabulary dictionary.
+        minimal_vocab = {}
+        # Basic tokens.
+        minimal_vocab["[PAD]"] = 0
+        minimal_vocab["[EOS]"] = 1
+        minimal_vocab["[UNK]"] = 2
+        next_index = 3
+        
+        # Add state tokens.
+        for token in state_tokens.values():
+            if token not in minimal_vocab:
+                minimal_vocab[token] = next_index
+                next_index += 1
+
+        # Add action tokens.
+        for token in action_tokens.values():
+            if token not in minimal_vocab:
+                minimal_vocab[token] = next_index
+                next_index += 1
+        
+        # Build a fast tokenizer using the tokenizers library.
+        tk_model = models.WordLevel(vocab=minimal_vocab, unk_token="[UNK]")
+        tk = Tokenizer(tk_model)
+        tk.pre_tokenizer = pre_tokenizers.Whitespace()
+        tk.decoder = decoders.WordPiece()
+        
+        # Create the Hugging Face Fast tokenizer.
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=tk,
+            unk_token="[UNK]",
+            pad_token="[PAD]",
+            eos_token="[EOS]"
+        )
+    else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
-    tokenizer.pad_token = tokenizer.eos_token
-    
-    # Add special tokens for the task
-    tokenizer.add_tokens(list(action_tokens.values()) + [f" {action}" for action in action_tokens.values()])
-    tokenizer.add_tokens(list(state_tokens.values()) + [f" {state}" for state in state_tokens.values()])
+        # Add special tokens for the task.
+        tokenizer.add_tokens(list(action_tokens.values()) + [f" {a}" for a in action_tokens.values()])
+        tokenizer.add_tokens(list(state_tokens.values()) + [f" {s}" for s in state_tokens.values()])
     
     return tokenizer
 
-
 def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=False, 
                 no_pretrain=False, output_dir=None, use_custom_models=False,
-                layerwise_supervision_config=None):
+                layerwise_supervision_config=None, chunk_size=None):
     """
     Set up the model based on the model type and arguments.
     
@@ -85,8 +113,9 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
                 n_head=4,
                 dropout=0.1
             )
-            model = TreeModel(config, chunk_size=512,
-                                        T1_num_layers=2, T2_num_layers=2)
+            print('chunk size: ', chunk_size)
+            model = TreeModel(config, chunk_size=chunk_size,
+                                        T1_num_layers=1, T2_num_layers=1)
         elif "gpt2" in model_name.lower():
             config = GPT2Config(
                 vocab_size=tokenizer.vocab_size,  # match your tokenizer

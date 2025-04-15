@@ -43,7 +43,7 @@ def parse_arguments():
     parser.add_argument("--max_len", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--max_steps", type=int, default=-1)
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--use_bfloat16", action="store_true", default=False, help="If true, uses bfloat16")
     parser.add_argument("--save_all_checkpoints", type=int, default=None, help="If set, saves checkpoints and interval specified in argument")
     parser.add_argument("--seed", type=int, default=42)
@@ -51,8 +51,10 @@ def parse_arguments():
     parser.add_argument("--full_determinism", action="store_true", default=False)
     parser.add_argument("--early_stopping", action="store_true", default=False)
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
-    parser.add_argument("--disable_wandb", action="store_true", default=True)
+    parser.add_argument("--disable_wandb", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--full_tree", action="store_true", default=True)
+    parser.add_argument("--chunk_size", type=int, default=64)
     return parser.parse_args()
 
 
@@ -171,6 +173,8 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
 def main():
     """Main function."""
     args = parse_arguments()
+    print('args.chunk_size:', args.chunk_size)
+    print('args.max_len:', args.max_len)
     
     # Set up determinism
     if args.full_determinism:
@@ -213,7 +217,8 @@ def main():
         no_pretrain=args.no_pretrain,
         output_dir=args.output_dir,
         use_custom_models=True,
-        layerwise_supervision_config=layerwise_supervision_config
+        layerwise_supervision_config=layerwise_supervision_config,
+        chunk_size = args.chunk_size if args.full_tree else args.max_len
     )
     
     # Set up data collator
