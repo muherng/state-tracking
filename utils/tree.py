@@ -92,7 +92,7 @@ class PrintLossCallback(TrainerCallback):
         self.last_eval_loss = None
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if state.global_step % 100 != 0:
+        if state.global_step % 1000 != 0:
             return
         if logs is None:
             return

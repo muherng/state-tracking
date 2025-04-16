@@ -99,7 +99,7 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False):
     print("Loading data")
     full_dataset = ChunkedDataset(args.data_dir, args.max_len, chunk_size=1, debug=debug)
     # Split into train/test
-    print('total_size:', len(full_dataset))
+    print(f"Loaded full dataset with {len(full_dataset)} samples")
     total_size = len(full_dataset)
     train_size = int(0.95 * total_size)
     
@@ -118,6 +118,11 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False):
         )
     print("Train dataset size:", len(train_dataset))
     print("Eval dataset size:", len(eval_dataset))
+    sample = train_dataset[0]
+    print("Sample story:", sample['story'])
+    print("Sample story:", sample['state_seq'])
+
+
     
     return train_dataset, eval_dataset
 
@@ -133,7 +138,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
-        save_steps=2000 if not args.save_all_checkpoints else args.save_all_checkpoints,
+        save_steps=500 if not args.save_all_checkpoints else args.save_all_checkpoints,
         save_strategy="steps",
         save_total_limit=None if args.save_all_checkpoints else 1,
         logging_dir='./logs',
@@ -175,7 +180,54 @@ def main():
     args = parse_arguments()
     print('args.chunk_size:', args.chunk_size)
     print('args.max_len:', args.max_len)
+    root_output = args.output_dir
+    args.output_dir = args.output_dir + f"/{args.model}_{args.chunk_size}_{args.max_len}"
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Set up dataset directory based on max_len
+    # (For instance, if training on max_len=4, then dataset_dir becomes "datasets/permutation_4")
+    dataset_dir = os.path.join("datasets_new", f"permutation_{args.num_items}_{args.max_len}")
     
+    # If the dataset does not already exist, generate it using the simulation function:
+    if not os.path.exists(dataset_dir):
+        print(f"Dataset for max_len={args.max_len} not found. Generating dataset...")
+        # You might want to adjust these parameters as needed.
+        task = PermutationTask(num_items=args.num_items)
+        # Here we use story_length as the max_len (or map it as needed)
+        if args.max_len > 16: 
+            num_steps = args.max_len
+        else: 
+            num_steps = 16
+        _stories, _states = task.simulate(
+            steps=num_steps,  
+            num_stories=10000,  # Adjust number of stories as needed
+            story_so_far="",
+            states_so_far=[task.init_state],
+            write_dir=dataset_dir,
+            train_ratio=0.99
+        )
+    else:
+        print(f"Loading dataset from {dataset_dir}")
+    
+    # Now set args.data_dir to the dataset directory for prepare_dataset:
+    args.data_dir = dataset_dir
+    #Set args.from_checkpoint to the most recent checkpoint if available.
+    checkpoint_root = root_output + f"/{args.model}_{args.chunk_size}_{args.max_len-1}"
+    print('checkpoint_root:', checkpoint_root)
+    if args.from_checkpoint is not None:
+        if os.path.exists(checkpoint_root):
+            ckpt_subdirs = [d for d in os.listdir(checkpoint_root) if d.startswith("checkpoint-") and d.split("-")[-1].isdigit()]
+            print('ckpt_subdirs:', ckpt_subdirs)
+            if ckpt_subdirs:
+                latest_ckpt = max(ckpt_subdirs, key=lambda d: int(d.split("-")[-1]))
+                args.from_checkpoint = os.path.join(checkpoint_root, latest_ckpt)
+            else:
+                print('set to None because no checkpoint found')
+                args.from_checkpoint = None
+        else:
+            print('set to None because no checkpoint found 2')
+            args.from_checkpoint = None
+    print('args.from_checkpoint:', args.from_checkpoint)
     # Set up determinism
     if args.full_determinism:
         torch.backends.cudnn.deterministic = True
@@ -234,7 +286,8 @@ def main():
     trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
     
     # Train model
-    trainer.train(resume_from_checkpoint=args.from_checkpoint)
+    #trainer.train(resume_from_checkpoint=args.from_checkpoint)
+    trainer.train()
     
     # Save model
     trainer.save_model(args.output_dir)

@@ -163,8 +163,10 @@ class PermutationTask:
         test_dir = os.path.join(write_dir, "test")
         os.makedirs(train_dir, exist_ok=True)
         os.makedirs(test_dir, exist_ok=True)
-        
+        print('num stories: ', num_stories)
+        #raise ValueError
         for story_idx in tqdm(range(num_stories), total=num_stories):
+            #print(story_idx)
             self.reset()
             story_rollouts, state_rollouts = [], deepcopy(states_so_far)
             
@@ -189,11 +191,14 @@ class PermutationTask:
             # Convert states to serializable format
             serializable_states = [state.permutation for state in state_rollouts]
             
-            with open(f"{save_dir}/story_{story_idx}.json", "w") as f:
-                f.write(json.dumps({
-                    "story": story.strip(),
-                    "state_seq": serializable_states,
-                }, indent=4))
+            if True: 
+                with open(f"{save_dir}/story_{story_idx}.json", "w") as f:
+                    f.write(json.dumps({
+                        "story": story.strip(),
+                        "state_seq": serializable_states,
+                    }, indent=4))
+            if story_idx % 1000 == 0:
+                print(f"{save_dir}/story_{story_idx}.json")
                 
         return stories, states
 

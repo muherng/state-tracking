@@ -14,7 +14,7 @@ class ChunkedDataset:
         self._format_type = None
         self._format_columns = None
         self._fingerprint = None  # Add fingerprint attribute
-        print('data_dir:', data_dir)
+        print('Chunked Dataset data_dir:', data_dir)
         self.data_dir = data_dir + '/train'
         self.max_len = max_len
         self.chunk_size = chunk_size

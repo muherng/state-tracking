@@ -108,14 +108,18 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
             config = GPT2Config(
                 vocab_size=tokenizer.vocab_size,
                 n_positions=4096,
-                n_embd=256,
-                n_layer=6,
-                n_head=4,
+                n_embd=768,
+                n_layer=6, #this is overridden by T1_num_layers and T2_num_layers
+                n_head=12,
                 dropout=0.1
             )
             print('chunk size: ', chunk_size)
-            model = TreeModel(config, chunk_size=chunk_size,
-                                        T1_num_layers=1, T2_num_layers=1)
+            if checkpoint_path is not None: 
+                model = TreeModel.from_pretrained(checkpoint_path, config=config, chunk_size=chunk_size,
+                                                  T1_num_layers=1, T2_num_layers=1)
+            else: 
+                model = TreeModel(config, chunk_size=chunk_size,
+                                            T1_num_layers=1, T2_num_layers=1)
         elif "gpt2" in model_name.lower():
             config = GPT2Config(
                 vocab_size=tokenizer.vocab_size,  # match your tokenizer

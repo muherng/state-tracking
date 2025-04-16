@@ -79,7 +79,7 @@ class DataCollatorForLanguageModelingWithDirectSupervision:
             )["input_ids"]
             # make same shape as input_ids
             batch["labels"] = batch["labels"][:, :batch["input_ids"].size(1)]
-            #print('batch["input_ids"]:', batch["input_ids"])
+            #print('batch["input_ids"]:', batch["input_ids"].shape)
             #print('batch["labels"]:', batch["labels"])
         
         # Add layerwise supervision if needed
