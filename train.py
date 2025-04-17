@@ -55,6 +55,7 @@ def parse_arguments():
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--full_tree", action="store_true", default=True)
     parser.add_argument("--chunk_size", type=int, default=64)
+    parser.add_argument("--num_stories", type=int, default=10000)
     return parser.parse_args()
 
 
@@ -198,9 +199,9 @@ def main():
             num_steps = args.max_len
         else: 
             num_steps = 16
-        _stories, _states = task.simulate(
+            _stories, _states = task.simulate(
             steps=num_steps,  
-            num_stories=10000,  # Adjust number of stories as needed
+            num_stories=args.num_stories,  # Adjust number of stories as needed
             story_so_far="",
             states_so_far=[task.init_state],
             write_dir=dataset_dir,
@@ -212,7 +213,7 @@ def main():
     # Now set args.data_dir to the dataset directory for prepare_dataset:
     args.data_dir = dataset_dir
     #Set args.from_checkpoint to the most recent checkpoint if available.
-    checkpoint_root = root_output + f"/{args.model}_{args.chunk_size}_{args.max_len-1}"
+    checkpoint_root = root_output + f"/{args.model}_{args.chunk_size}_{27}"
     print('checkpoint_root:', checkpoint_root)
     if args.from_checkpoint is not None:
         if os.path.exists(checkpoint_root):

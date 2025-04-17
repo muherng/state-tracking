@@ -92,7 +92,7 @@ class PrintLossCallback(TrainerCallback):
         self.last_eval_loss = None
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if state.global_step % 1000 != 0:
+        if state.global_step % 10000 != 0:
             return
         if logs is None:
             return
@@ -269,7 +269,12 @@ class TransformerScanModel(nn.Module):
         dummy = (torch.zeros_like(level0[0]), True)
         # Compute prefix states using the vectorized scan.
         # P: (batch, num_chunks+1, chunk_size, hidden_dim)
-        P = self.vectorized_prefix_scan(level0, dummy, debug=False)
+        parallel = False
+        if parallel:
+            P = self.vectorized_prefix_scan(level0, dummy, debug=False)
+        else: 
+            P,_ = self.compute_sequential_prefix(input_ids, debug=False)
+            #print("P shape: ", P.shape)
 
         expected_dummy = dummy[0]
         actual_dummy = P[:, 0, :, :]
@@ -313,6 +318,7 @@ class TransformerScanModel(nn.Module):
             T2_inputs = T2_inputs.view(-1, T2_inputs.size(2), T2_inputs.size(3))
             seq_len_t2 = T2_inputs.size(1)  # this equals 2*chunk_size
             causal_mask = self.get_causal_mask(seq_len_t2, T2_inputs.device)
+            #print('T2 inputs and causal mask shape: ', (T2_inputs.shape, causal_mask.shape))
             T2_out,_ = self.T2(T2_inputs, causal_mask=causal_mask)  # (batch*(num_chunks-1), 2*chunk_size, hidden_dim)
             # For each T2 input, we take the last chunk_size tokens to collect all the logits.
             # That is, we take only the last chunk_size tokens.

@@ -166,6 +166,8 @@ class TreeModel(TransformerScanModel):
             # --- New code to measure misclassification of the last token ---
             # Compute predictions via argmax over vocabulary.
             predicted_tokens = shift_logits.argmax(dim=-1)  # shape: (batch, seq_len-1)
+            print('predicted_tokens: ', predicted_tokens[0,:])
+            print('shift_labels: ', shift_labels[0,:])
             # For the last token in each sample, index -1 across the sequence dimension.
             last_token_preds = predicted_tokens[:, -1]
             last_token_targets = shift_labels[:, -1]
