@@ -56,6 +56,7 @@ def parse_arguments():
     parser.add_argument("--full_tree", action="store_true", default=True)
     parser.add_argument("--chunk_size", type=int, default=64)
     parser.add_argument("--num_stories", type=int, default=10000)
+    parser.add_argument("--generate_dataset", action="store_true", default=False, help="If true, generates dataset")
     return parser.parse_args()
 
 
@@ -190,7 +191,7 @@ def main():
     dataset_dir = os.path.join("datasets_new", f"permutation_{args.num_items}_{args.max_len}")
     
     # If the dataset does not already exist, generate it using the simulation function:
-    if not os.path.exists(dataset_dir):
+    if not os.path.exists(dataset_dir) or args.generate_dataset:
         print(f"Dataset for max_len={args.max_len} not found. Generating dataset...")
         # You might want to adjust these parameters as needed.
         task = PermutationTask(num_items=args.num_items)
