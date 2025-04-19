@@ -57,6 +57,9 @@ def parse_arguments():
     parser.add_argument("--chunk_size", type=int, default=64)
     parser.add_argument("--num_stories", type=int, default=10000)
     parser.add_argument("--generate_dataset", action="store_true", default=False, help="If true, generates dataset")
+    parser.add_argument("--eval_lengths", type=str, default=None,
+                        help="Skip training and evaluate a trained checkpoint on "
+                        "each length given here, e.g. 8,16,24,32")
     return parser.parse_args()
 
 
@@ -134,6 +137,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
     print("Setting up trainer")
     wandb.init(project="state-tracking", name=args.output_dir)
     training_args = TrainingArguments(
+        eval_on_start=True,
         output_dir=args.output_dir,
         overwrite_output_dir=True,
         num_train_epochs=args.epochs,
@@ -148,7 +152,6 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         eval_strategy="steps" if args.early_stopping else "epoch",
         eval_steps=2000 if args.early_stopping else None,
         batch_eval_metrics=True,
-        eval_on_start=True if args.early_stopping else False,
         remove_unused_columns=False,
         report_to="none" if args.disable_wandb else "wandb",
         dataloader_num_workers=1,
@@ -200,7 +203,7 @@ def main():
             num_steps = args.max_len
         else: 
             num_steps = 16
-            _stories, _states = task.simulate(
+        _stories, _states = task.simulate(
             steps=num_steps,  
             num_stories=args.num_stories,  # Adjust number of stories as needed
             story_so_far="",
@@ -214,7 +217,7 @@ def main():
     # Now set args.data_dir to the dataset directory for prepare_dataset:
     args.data_dir = dataset_dir
     #Set args.from_checkpoint to the most recent checkpoint if available.
-    checkpoint_root = root_output + f"/{args.model}_{args.chunk_size}_{27}"
+    checkpoint_root = root_output + f"/{args.model}_{args.chunk_size}_{args.from_checkpoint}"
     print('checkpoint_root:', checkpoint_root)
     if args.from_checkpoint is not None:
         if os.path.exists(checkpoint_root):
@@ -292,6 +295,62 @@ def main():
     trainer.train()
     
     # Save model
+    trainer.save_model(args.output_dir)
+    tokenizer.save_pretrained(args.output_dir)
+
+    # ---------- QUICK‑PATH: length‑generalisation ONLY ----------
+    if args.eval_lengths:
+        if not args.from_checkpoint:
+            raise ValueError("--eval_lengths needs a trained model supplied with --from_checkpoint")
+
+        lengths = [int(x) for x in args.eval_lengths.split(",")]
+        results = {}
+
+        for L in lengths:
+            print(f"\n### Evaluating sequence length {L} ###")
+            args.max_len = L
+
+            # Build / generate the appropriate dataset directory
+            args.data_dir = os.path.join("datasets_new", f"permutation_{args.num_items}_{L}")
+            if not os.path.exists(args.data_dir):
+                print("  ↳ dataset missing – generating once")
+                tmp_task = PermutationTask(num_items=args.num_items)
+                tmp_task.simulate(steps=max(L,16),
+                                  num_stories=args.num_stories,
+                                  story_so_far="",
+                                  states_so_far=[tmp_task.init_state],
+                                  write_dir=args.data_dir,
+                                  train_ratio=0.0)     # all examples go to eval
+
+             # Prepare only the *eval* split; ignore training split
+            _, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
+
+            eval_trainer = Trainer(
+                model=model,
+                processing_class=tokenizer,
+                args=TrainingArguments(
+                    output_dir=args.output_dir,
+                    per_device_eval_batch_size=args.batch_size,
+                    remove_unused_columns=False,
+                    seed=args.seed,
+                    report_to="none"),
+                data_collator=data_collator,
+                eval_dataset=eval_dataset,
+            )
+
+            metrics = eval_trainer.evaluate()
+            print(metrics)
+            results[L] = metrics["eval_loss"]
+
+        print("\n======  Summary  ======")
+        for L, loss in results.items():
+            print(f"L={L:>3}  |  eval_loss = {loss:.4f}")
+        return
+
+    # ---------- USUAL TRAINING PATH ----------
+    train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
+    trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
+    trainer.train()
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 
