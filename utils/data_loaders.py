@@ -10,12 +10,13 @@ class ChunkedDataset:
     Dataset that loads data in chunks to save memory.
     Useful for large datasets that don't fit in memory.
     """
-    def __init__(self, data_dir, max_len, chunk_size=10000, debug=False):
+    def __init__(self, data_dir, max_len, chunk_size=10000, debug=False, train_test = 'train'):
         self._format_type = None
         self._format_columns = None
         self._fingerprint = None  # Add fingerprint attribute
         print('Chunked Dataset data_dir:', data_dir)
-        self.data_dir = data_dir + '/train'
+        print('train_test:', train_test)
+        self.data_dir = data_dir + "/" + train_test
         self.max_len = max_len
         self.chunk_size = chunk_size
         self.debug = debug

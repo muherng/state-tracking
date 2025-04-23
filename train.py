@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import wandb
 import random
+import matplotlib.pyplot as plt
 
 from transformers import (
     TrainingArguments, 
@@ -34,9 +35,9 @@ def parse_arguments():
         "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B","tree"
     ])
     parser.add_argument("--data_dir", type=str, default="data")
-    parser.add_argument("--output_dir", type=str, default="checkpoints")
+    parser.add_argument("--output_dir", type=str, default="saved_models")
     parser.add_argument("--num_items", type=int, default=3, choices=[3, 5], help="Number of items for permutation task")
-    parser.add_argument("--supervision_type", type=str, default="next_token", choices=["direct_state", "direct_topic", "next_token"])
+    parser.add_argument("--supervision_type", type=str, default="direct_state", choices=["direct_state", "direct_topic", "next_token"])
     parser.add_argument("--layerwise_supervision_type", type=str, default=None, help="File containing layerwise supervision keys")
     parser.add_argument("--no_pretrain", action="store_true", default=False, help="If true, does not use pre-trained model")
     parser.add_argument("--from_checkpoint", type=str, default=None, help="If provided, loads model from checkpoint")
@@ -51,7 +52,7 @@ def parse_arguments():
     parser.add_argument("--full_determinism", action="store_true", default=False)
     parser.add_argument("--early_stopping", action="store_true", default=False)
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
-    parser.add_argument("--disable_wandb", action="store_true", default=False)
+    parser.add_argument("--disable_wandb", action="store_true", default=True)
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--full_tree", action="store_true", default=True)
     parser.add_argument("--chunk_size", type=int, default=64)
@@ -99,10 +100,10 @@ def setup_data_collator(args, tokenizer, state_tokens, parity=None, layerwise_su
     return data_collator
 
 
-def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False):
+def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False,train_test="train"):
     """Prepare the dataset for training."""
     print("Loading data")
-    full_dataset = ChunkedDataset(args.data_dir, args.max_len, chunk_size=1, debug=debug)
+    full_dataset = ChunkedDataset(args.data_dir, args.max_len, chunk_size=1, debug=debug,train_test=train_test)
     # Split into train/test
     print(f"Loaded full dataset with {len(full_dataset)} samples")
     total_size = len(full_dataset)
@@ -179,6 +180,10 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
     
     return trainer
 
+#Length Generalization command
+#python train.py --model tree --chunk_size 1 --from_checkpoint 16 --eval_lengths 16,24,32,40
+
+#Training command 
 
 def main():
     """Main function."""
@@ -199,10 +204,7 @@ def main():
         # You might want to adjust these parameters as needed.
         task = PermutationTask(num_items=args.num_items)
         # Here we use story_length as the max_len (or map it as needed)
-        if args.max_len > 16: 
-            num_steps = args.max_len
-        else: 
-            num_steps = 16
+        num_steps = max(args.max_len,16)
         _stories, _states = task.simulate(
             steps=num_steps,  
             num_stories=args.num_stories,  # Adjust number of stories as needed
@@ -281,25 +283,10 @@ def main():
     # Set up data collator
     data_collator = setup_data_collator(
         args, tokenizer, state_tokens, parity, layerwise_supervision_config)
-    
-    # Prepare dataset
-    train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
-    #print('train_dataset: ', train_dataset[0]["story"])
-    #print('train_dataset: ', train_dataset[0]["state_seq"])
-    
-    # Set up trainer
-    trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
-    
-    # Train model
-    #trainer.train(resume_from_checkpoint=args.from_checkpoint)
-    trainer.train()
-    
-    # Save model
-    trainer.save_model(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
 
     # ---------- QUICK‑PATH: length‑generalisation ONLY ----------
     if args.eval_lengths:
+        args.eval_lengths = str([int(8*i) for i in range(1,20)])[1:-1]
         if not args.from_checkpoint:
             raise ValueError("--eval_lengths needs a trained model supplied with --from_checkpoint")
 
@@ -323,7 +310,7 @@ def main():
                                   train_ratio=0.0)     # all examples go to eval
 
              # Prepare only the *eval* split; ignore training split
-            _, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
+            _, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug, train_test = "test")
 
             eval_trainer = Trainer(
                 model=model,
@@ -341,6 +328,26 @@ def main():
             metrics = eval_trainer.evaluate()
             print(metrics)
             results[L] = metrics["eval_loss"]
+        
+        # ---- PLOT: eval‑loss vs. sequence length ----
+        xs = sorted(results.keys())
+        ys = [results[x] for x in xs]
+
+        plt.figure()
+        plt.plot(xs, ys, marker="o")
+        plt.xlabel("Sequence length")
+        plt.ylabel("Evaluation loss")
+        plt.ylim(0, 20)
+        plt.title("Length‑generalisation performance")
+        plt.grid(True)
+
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        plot_path = os.path.join(args.output_dir,
+                                 f"length_generalisation_{timestamp}.png")
+        plt.savefig(plot_path, bbox_inches="tight")
+        print(f"\nPlot saved → {plot_path}")
 
         print("\n======  Summary  ======")
         for L, loss in results.items():

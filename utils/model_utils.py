@@ -75,6 +75,9 @@ def setup_tokenizer(model_name, state_tokens, action_tokens):
         )
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # Add padding token for models like GPT2 that don't have one by default.
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
         # Add special tokens for the task.
         tokenizer.add_tokens(list(action_tokens.values()) + [f" {a}" for a in action_tokens.values()])
         tokenizer.add_tokens(list(state_tokens.values()) + [f" {s}" for s in state_tokens.values()])
