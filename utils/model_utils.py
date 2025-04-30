@@ -86,7 +86,8 @@ def setup_tokenizer(model_name, state_tokens, action_tokens):
 
 def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=False, 
                 no_pretrain=False, output_dir=None, use_custom_models=False,
-                layerwise_supervision_config=None, chunk_size=None):
+                layerwise_supervision_config=None, chunk_size=None,
+                T1_num_layers=1, T2_num_layers=1):
     """
     Set up the model based on the model type and arguments.
     
@@ -99,6 +100,8 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
         output_dir: Output directory for checkpoints (for training)
         use_custom_models: Whether to use custom model classes
         layerwise_supervision_config: Configuration for layerwise supervision
+        T1_num_layers: Number of layers for T1 in the tree model
+        T2_num_layers: Number of layers for T2 in the tree model
         
     Returns:
         model: The language model
@@ -119,10 +122,10 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
             print('chunk size: ', chunk_size)
             if checkpoint_path is not None: 
                 model = TreeModel.from_pretrained(checkpoint_path, config=config, chunk_size=chunk_size,
-                                                  T1_num_layers=1, T2_num_layers=1)
+                                                  T1_num_layers=T1_num_layers, T2_num_layers=T2_num_layers)
             else: 
                 model = TreeModel(config, chunk_size=chunk_size,
-                                            T1_num_layers=1, T2_num_layers=1)
+                                            T1_num_layers=T1_num_layers, T2_num_layers=T2_num_layers)
         elif "gpt" in model_name.lower():
             config_class = GPT2Config
             model_class = GPT2ModelWithLayerTargets if use_custom_models else GPT2LMHeadModel

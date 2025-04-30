@@ -24,6 +24,8 @@ from utils.data_collators import (
 from permutation_task import PermutationTask, compute_parity
 from utils.model_utils import setup_tokenizer, setup_model
 
+from transformers import TrainerCallback
+from typing import Dict
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -50,7 +52,7 @@ def parse_arguments():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--data_determinism", action="store_true", default=False)
     parser.add_argument("--full_determinism", action="store_true", default=False)
-    parser.add_argument("--early_stopping", action="store_true", default=False)
+    parser.add_argument("--early_stopping", action="store_true", default=True)
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
     parser.add_argument("--disable_wandb", action="store_true", default=True)
     parser.add_argument("--debug", action="store_true", default=False)
@@ -61,6 +63,8 @@ def parse_arguments():
     parser.add_argument("--eval_lengths", type=str, default=None,
                         help="Skip training and evaluate a trained checkpoint on "
                         "each length given here, e.g. 8,16,24,32")
+    parser.add_argument("--T1_num_layers", type=int, default=1, help="Number of layers for T1 in the tree model")
+    parser.add_argument("--T2_num_layers", type=int, default=1, help="Number of layers for T2 in the tree model")
     return parser.parse_args()
 
 class AddLabelsDataset(torch.utils.data.Dataset):
@@ -152,6 +156,22 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False,tr
     return train_dataset, eval_dataset
 
 
+def compute_metrics(eval_pred) -> Dict:
+    logits, labels = eval_pred
+    # For language modeling, logits shape: (batch, seq_len, vocab_size)
+    # labels shape: (batch, seq_len)
+    # Get predictions by argmax over vocab
+    preds = np.argmax(logits, axis=-1)
+    # Only compute error where labels != -100 (ignore index)
+    mask = labels != -100
+    errors = (preds != labels) & mask
+    num_errors = errors.sum()
+    num_total = mask.sum()
+    error_rate = num_errors / num_total if num_total > 0 else 0.0
+    print(f"[compute_metrics] Batch shape logits: {logits.shape}, labels: {labels.shape}")
+    print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}")
+    return {"eval_loss": float(np.mean((logits[mask] - labels[mask])**2)), "num_errors": int(num_errors), "error_rate": float(error_rate)}
+
 def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator):
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
@@ -170,7 +190,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         logging_dir='./logs',
         logging_steps=10,
         eval_strategy="steps" if args.early_stopping else "epoch",
-        eval_steps=2000 if args.early_stopping else None,
+        eval_steps=500 if args.early_stopping else None,
         batch_eval_metrics=True,
         remove_unused_columns=False,
         report_to="none" if args.disable_wandb else "wandb",
@@ -192,6 +212,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         data_collator=data_collator,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
+        compute_metrics=compute_metrics,
     )
     
     if args.early_stopping:
@@ -296,7 +317,9 @@ def main():
         output_dir=args.output_dir,
         use_custom_models=True,
         layerwise_supervision_config=layerwise_supervision_config,
-        chunk_size = args.chunk_size if args.full_tree else args.max_len
+        chunk_size = args.chunk_size if args.full_tree else args.max_len,
+        T1_num_layers=args.T1_num_layers,
+        T2_num_layers=args.T2_num_layers
     )
     
     # Set up data collator
@@ -348,7 +371,8 @@ def main():
                 data_collator=data_collator,
                 train_dataset=train_dataset,  # necessary to trigger training loop/eval_on_start
                 eval_dataset=eval_dataset,
-                callbacks=[StopAfterEvalCallback()]
+                callbacks=[StopAfterEvalCallback()],
+                compute_metrics=compute_metrics,
             )
 
             train_output = eval_trainer.train()
