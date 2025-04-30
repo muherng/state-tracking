@@ -63,6 +63,25 @@ def parse_arguments():
                         "each length given here, e.g. 8,16,24,32")
     return parser.parse_args()
 
+class AddLabelsDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+    def __len__(self):
+        return len(self.dataset)
+    def __getitem__(self, idx):
+        sample = self.dataset[idx].copy()
+        # If no "labels" key exists, copy from "state_seq"
+        if "labels" not in sample:
+            sample["labels"] = sample["state_seq"]
+        return sample
+    
+from transformers import TrainerCallback
+
+class StopAfterEvalCallback(TrainerCallback):
+    def on_evaluate(self, args, state, control, **kwargs):
+        control.should_training_stop = True
+        return control
+
 
 def setup_data_collator(args, tokenizer, state_tokens, parity=None, layerwise_supervision_config=None):
     """
@@ -307,27 +326,38 @@ def main():
                                   story_so_far="",
                                   states_so_far=[tmp_task.init_state],
                                   write_dir=args.data_dir,
-                                  train_ratio=0.0)     # all examples go to eval
+                                  train_ratio=0.5)     # all examples go to eval
 
              # Prepare only the *eval* split; ignore training split
-            _, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug, train_test = "test")
+            train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug, train_test = "train")
 
+            # Set up a Trainer that will evaluate immediately (using eval_on_start)
+            training_args_eval = TrainingArguments(
+                output_dir=args.output_dir,
+                per_device_eval_batch_size=args.batch_size,
+                remove_unused_columns=False,
+                seed=args.seed,
+                report_to="none",
+                eval_on_start=True,
+                max_steps=1000  # a dummy value; training will stop after evaluation due to our callback
+            )
             eval_trainer = Trainer(
                 model=model,
                 processing_class=tokenizer,
-                args=TrainingArguments(
-                    output_dir=args.output_dir,
-                    per_device_eval_batch_size=args.batch_size,
-                    remove_unused_columns=False,
-                    seed=args.seed,
-                    report_to="none"),
+                args=training_args_eval,
                 data_collator=data_collator,
+                train_dataset=train_dataset,  # necessary to trigger training loop/eval_on_start
                 eval_dataset=eval_dataset,
+                callbacks=[StopAfterEvalCallback()]
             )
 
-            metrics = eval_trainer.evaluate()
-            print(metrics)
-            results[L] = metrics["eval_loss"]
+            train_output = eval_trainer.train()
+            metrics = train_output.metrics
+            print("metrics:", metrics)
+            if "eval_loss" in metrics:
+                results[L] = metrics["eval_loss"]
+            else:
+                print("No eval_loss returned for sequence length", L)
         
         # ---- PLOT: eval‑loss vs. sequence length ----
         xs = sorted(results.keys())

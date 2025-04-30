@@ -123,17 +123,6 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
             else: 
                 model = TreeModel(config, chunk_size=chunk_size,
                                             T1_num_layers=1, T2_num_layers=1)
-        elif "gpt2" in model_name.lower():
-            config = GPT2Config(
-                vocab_size=tokenizer.vocab_size,  # match your tokenizer
-                n_positions=1024,
-                n_embd=256,
-                n_layer=6,
-                n_head=4,
-                dropout=0.1
-                # You can adjust additional hyperparameters here if needed.
-            )
-            model = GPT2LMHeadModel(config)
         elif "gpt" in model_name.lower():
             config_class = GPT2Config
             model_class = GPT2ModelWithLayerTargets if use_custom_models else GPT2LMHeadModel
@@ -165,10 +154,8 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
                 print(f"Warning: Found subdirectories in {output_dir}, but none match the expected 'checkpoint-NUMBER' format.")
     
     # Load or create model
-    no_pretrain = True
-    checkpoint_path = None
-    if "tree" in model_name.lower() or "gpt2" in model_name.lower():
-        print('Model class: ', model_name.lower())
+    if "tree" in model_name.lower():
+        print('Tree model has custom checkpoint loading separate from other huggingface models')
     elif checkpoint_path:
         print(f"Loading model from checkpoint: {checkpoint_path}")
         if use_custom_models:

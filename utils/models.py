@@ -10,7 +10,7 @@ class GPT2MaskedLMHeadModel(GPT2LMHeadModel):
     """GPT2 model with masked language modeling head for selective loss computation."""
     
     def forward(self, input_ids, attention_mask=None, labels=None, labels_mask=None, **kwargs):
-        outputs = super().forward(input_ids, attention_mask=attention_mask, labels=None, **kwargs)
+        outputs = super().forward(input_ids, attention_mask=attention_mask, labels=labels, **kwargs)
         logits = outputs.logits
         if labels is not None:
             # move labels to correct device to enable model parallelism
@@ -81,7 +81,7 @@ class ModelWithLayerTargetsMixin:
         labels=None,
         **kwargs
     ):
-        outputs = super().forward(input_ids, attention_mask=attention_mask, labels=None, output_hidden_states=True, return_dict=True)
+        outputs = super().forward(input_ids, attention_mask=attention_mask, labels=labels, output_hidden_states=True, return_dict=True)
         hidden_states = outputs.hidden_states
         loss = 0
         loss_fct = nn.CrossEntropyLoss()
@@ -102,7 +102,7 @@ class ModelWithLayerTargetsMixin:
         shift_logits = final_logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         loss += loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-        print('labels: ', labels)
+        #print('labels: ', labels)
         return loss, outputs
 
 
@@ -115,7 +115,8 @@ class GPT2ModelWithLayerTargets(ModelWithLayerTargetsMixin, GPT2LMHeadModel):
     
     def forward(self, *args, **kwargs):
         loss,outputs = self.forward_with_layer_targets(*args, **kwargs)
-        return loss, outputs
+        outputs["loss"] = loss
+        return outputs
 
 
 class LlamaModelWithLayerTargets(ModelWithLayerTargetsMixin, LlamaForCausalLM):
