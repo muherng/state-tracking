@@ -67,26 +67,6 @@ def parse_arguments():
     parser.add_argument("--T2_num_layers", type=int, default=1, help="Number of layers for T2 in the tree model")
     return parser.parse_args()
 
-class AddLabelsDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset):
-        self.dataset = dataset
-    def __len__(self):
-        return len(self.dataset)
-    def __getitem__(self, idx):
-        sample = self.dataset[idx].copy()
-        # If no "labels" key exists, copy from "state_seq"
-        if "labels" not in sample:
-            sample["labels"] = sample["state_seq"]
-        return sample
-    
-from transformers import TrainerCallback
-
-class StopAfterEvalCallback(TrainerCallback):
-    def on_evaluate(self, args, state, control, **kwargs):
-        control.should_training_stop = True
-        return control
-
-
 def setup_data_collator(args, tokenizer, state_tokens, parity=None, layerwise_supervision_config=None):
     """
     Set up the data collator based on the supervision type.
@@ -151,8 +131,6 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False,tr
     print("Sample story:", sample['story'])
     print("Sample story:", sample['state_seq'])
 
-
-    
     return train_dataset, eval_dataset
 
 
@@ -342,7 +320,7 @@ def main():
 
     # ---------- QUICK‑PATH: length‑generalisation ONLY ----------
     if args.eval_lengths:
-        args.eval_lengths = str([int(8*i) for i in range(1,20)])[1:-1]
+        args.eval_lengths = str([int(8*i) + 10 for i in range(1,20)])[1:-1]
         if not args.from_checkpoint:
             raise ValueError("--eval_lengths needs a trained model supplied with --from_checkpoint")
 
@@ -352,6 +330,9 @@ def main():
 
         for L in lengths:
             print(f"\n### Evaluating sequence length {L} ###")
+            # Store original max_len
+            original_max_len = args.max_len
+            # Temporarily set max_len to current length
             args.max_len = L
 
             # Build / generate the appropriate dataset directory
@@ -366,31 +347,12 @@ def main():
                                   write_dir=args.data_dir,
                                   train_ratio=0.5)     # all examples go to eval
 
-             # Prepare only the *eval* split; ignore training split
-            train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug, train_test = "train")
-
-            # Set up a Trainer that will evaluate immediately (using eval_on_start)
-            training_args_eval = TrainingArguments(
-                output_dir=args.output_dir,
-                per_device_eval_batch_size=args.batch_size,
-                remove_unused_columns=False,
-                seed=args.seed,
-                report_to="none",
-                eval_on_start=True,
-                max_steps=1000  # a dummy value; training will stop after evaluation due to our callback
-            )
-            eval_trainer = Trainer(
-                model=model,
-                processing_class=tokenizer,
-                args=training_args_eval,
-                data_collator=data_collator,
-                train_dataset=train_dataset,  # necessary to trigger training loop/eval_on_start
-                eval_dataset=eval_dataset,
-                callbacks=[StopAfterEvalCallback()],
-                compute_metrics=compute_metrics,
-            )
-
-            train_output = eval_trainer.train()
+            # Use the same training logic as the main branch
+            train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
+            trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
+            
+            # Run training (which will evaluate and stop)
+            train_output = trainer.train()
             metrics = train_output.metrics
             print("metrics:", metrics)
             if "eval_loss" in metrics:
@@ -399,7 +361,10 @@ def main():
                 error_rates[L] = metrics["eval_error_rate"]
             else:
                 print("No eval_loss returned for sequence length", L)
-        
+            
+            # Restore original max_len
+            args.max_len = original_max_len
+
         # ---- PLOT: eval‑loss vs. sequence length ----
         xs = sorted(results.keys())
         ys = [results[x] for x in xs]
