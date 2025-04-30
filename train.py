@@ -159,7 +159,15 @@ def compute_metrics(eval_pred, compute_result=True):
     #print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}")
     if not compute_result:
         return None  # Don't return metrics for intermediate batches
+    
+    # Compute cross entropy loss
+    if isinstance(logits, np.ndarray):
+        logits = torch.from_numpy(logits)
+    loss_fct = torch.nn.CrossEntropyLoss()
+    loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+    
     return {
+        "eval_loss": float(loss),  # Add eval_loss for both models
         "num_errors": int(num_errors),
         "error_rate": float(error_rate)
     }
@@ -195,6 +203,12 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         metric_for_best_model="eval_loss" if args.early_stopping else None,
         greater_is_better=False if args.early_stopping else True,
         load_best_model_at_end=True if args.early_stopping else False,
+        # Add these arguments to ensure eval_loss is computed
+        evaluation_strategy="steps",
+        eval_steps=1,
+        save_strategy="no",
+        logging_strategy="steps",
+        logging_steps=1,
     )
     
     trainer = Trainer(
@@ -351,9 +365,8 @@ def main():
             train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
             trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
             
-            # Run training (which will evaluate and stop)
-            train_output = trainer.train()
-            metrics = train_output.metrics
+            # Only evaluate, don't train
+            metrics = trainer.evaluate()
             print("metrics:", metrics)
             if "eval_loss" in metrics:
                 results[L] = metrics["eval_loss"]
