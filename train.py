@@ -60,7 +60,7 @@ def parse_arguments():
     parser.add_argument("--chunk_size", type=int, default=64)
     parser.add_argument("--num_stories", type=int, default=10000)
     parser.add_argument("--generate_dataset", action="store_true", default=False, help="If true, generates dataset")
-    parser.add_argument("--eval_lengths", type=str, default=None,
+    parser.add_argument("--eval_lengths", action="store_true", default=False,
                         help="Skip training and evaluate a trained checkpoint on "
                         "each length given here, e.g. 8,16,24,32")
     parser.add_argument("--T1_num_layers", type=int, default=1, help="Number of layers for T1 in the tree model")
@@ -156,12 +156,21 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False,tr
     return train_dataset, eval_dataset
 
 
-def compute_metrics(eval_pred) -> Dict:
+def compute_metrics(eval_pred, compute_result=True):
     logits, labels = eval_pred
+    logits = logits['logits']
+    #print("logits shape: ", logits.shape)
     # For language modeling, logits shape: (batch, seq_len, vocab_size)
     # labels shape: (batch, seq_len)
     # Get predictions by argmax over vocab
-    preds = np.argmax(logits, axis=-1)
+    if isinstance(logits, np.ndarray):
+        preds = torch.from_numpy(np.argmax(logits, axis=-1))
+    else:
+        preds = torch.argmax(logits, dim=-1)
+    # Shift predictions to align with labels (predictions start at position 1)
+    preds = preds[:, :-1]  # Remove last prediction
+    labels = labels[:, 1:]  # Remove first label
+    #print(f"[compute_metrics] Preds: {preds[0,:5]}, Labels: {labels[0,:5]}")
     # Only compute error where labels != -100 (ignore index)
     mask = labels != -100
     errors = (preds != labels) & mask
@@ -169,15 +178,20 @@ def compute_metrics(eval_pred) -> Dict:
     num_total = mask.sum()
     error_rate = num_errors / num_total if num_total > 0 else 0.0
     print(f"[compute_metrics] Batch shape logits: {logits.shape}, labels: {labels.shape}")
-    print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}")
-    return {"eval_loss": float(np.mean((logits[mask] - labels[mask])**2)), "num_errors": int(num_errors), "error_rate": float(error_rate)}
+    #print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}")
+    if not compute_result:
+        return None  # Don't return metrics for intermediate batches
+    return {
+        "num_errors": int(num_errors),
+        "error_rate": float(error_rate)
+    }
 
 def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator):
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
     wandb.init(project="state-tracking", name=args.output_dir)
     training_args = TrainingArguments(
-        eval_on_start=True,
+        eval_on_start=True,  # Always evaluate at start
         output_dir=args.output_dir,
         overwrite_output_dir=True,
         num_train_epochs=args.epochs,
@@ -188,9 +202,9 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         save_strategy="steps",
         save_total_limit=None if args.save_all_checkpoints else 1,
         logging_dir='./logs',
-        logging_steps=10,
+        logging_steps=100,
         eval_strategy="steps" if args.early_stopping else "epoch",
-        eval_steps=500 if args.early_stopping else None,
+        eval_steps=100 if args.early_stopping else None,
         batch_eval_metrics=True,
         remove_unused_columns=False,
         report_to="none" if args.disable_wandb else "wandb",
@@ -334,6 +348,7 @@ def main():
 
         lengths = [int(x) for x in args.eval_lengths.split(",")]
         results = {}
+        error_rates = {}
 
         for L in lengths:
             print(f"\n### Evaluating sequence length {L} ###")
@@ -380,6 +395,8 @@ def main():
             print("metrics:", metrics)
             if "eval_loss" in metrics:
                 results[L] = metrics["eval_loss"]
+            if "eval_error_rate" in metrics:
+                error_rates[L] = metrics["eval_error_rate"]
             else:
                 print("No eval_loss returned for sequence length", L)
         
@@ -399,13 +416,35 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         plot_path = os.path.join(args.output_dir,
-                                 f"length_generalisation_{timestamp}.png")
+                                 f"length_generalisation_loss_{timestamp}.png")
         plt.savefig(plot_path, bbox_inches="tight")
-        print(f"\nPlot saved → {plot_path}")
+        print(f"\nLoss plot saved → {plot_path}")
+
+        # ---- PLOT: error rate vs. sequence length ----
+        if error_rates:
+            xs = sorted(error_rates.keys())
+            ys = [error_rates[x] for x in xs]
+
+            plt.figure()
+            plt.plot(xs, ys, marker="o")
+            plt.xlabel("Sequence length")
+            plt.ylabel("Error rate")
+            plt.ylim(0, 1)
+            plt.title("Length‑generalisation error rate")
+            plt.grid(True)
+
+            plot_path = os.path.join(args.output_dir,
+                                    f"length_generalisation_error_{timestamp}.png")
+            plt.savefig(plot_path, bbox_inches="tight")
+            print(f"\nError rate plot saved → {plot_path}")
 
         print("\n======  Summary  ======")
-        for L, loss in results.items():
-            print(f"L={L:>3}  |  eval_loss = {loss:.4f}")
+        for L in sorted(results.keys()):
+            print(f"L={L:>3}  |  eval_loss = {results[L]:.4f}", end="")
+            if L in error_rates:
+                print(f"  |  error_rate = {error_rates[L]:.4f}")
+            else:
+                print()
         return
 
     # ---------- USUAL TRAINING PATH ----------

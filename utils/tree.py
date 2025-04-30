@@ -85,14 +85,14 @@ def collate_fn(batch):
 # -----------------------------------------------------------------------------
 # Trainer Callbacks (unchanged)
 # -----------------------------------------------------------------------------
-class PrintLossCallback(TrainerCallback):
+""" class PrintLossCallback(TrainerCallback):
     def __init__(self):
         self.best_training_loss = float('inf')
         self.best_eval_loss = float('inf')
         self.last_eval_loss = None
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if state.global_step % 10000 != 0:
+        if state.global_step % 100 != 0:  # Changed from 10000 to 100 for more frequent logging
             return
         if logs is None:
             return
@@ -126,7 +126,7 @@ class PrintLossCallback(TrainerCallback):
             out_str += f"Training Loss: {current_loss:.4f} (Best: {self.best_training_loss:.4f}, Perp: {training_perplexity:.4f})"
         if current_eval_loss is not None:
             out_str += f" | Eval Loss: {current_eval_loss:.4f} (Best: {self.best_eval_loss:.4f}, Perp: {eval_perplexity:.4f})"
-        print(out_str)
+        print(out_str) """
 
 class CustomTrainer(Trainer):
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
