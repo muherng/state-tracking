@@ -138,13 +138,18 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False,tr
 
 def compute_metrics(eval_pred, compute_result=True):
     """Compute metrics for evaluation."""
-    # Unpack predictions and labels
-    if isinstance(eval_pred, tuple):
-        predictions, labels = eval_pred
-    else:
-        return {"eval_loss": 0.0, "error_rate": 1.0, "num_errors": 0}
+    #print('FOOBAR')
+    #print('eval_pred:', eval_pred)
+    
+    # Get predictions and labels from EvalPrediction object
+    predictions = eval_pred.predictions
+    labels = eval_pred.label_ids
     
     # Handle different prediction formats
+    if isinstance(predictions, tuple):
+        # If predictions is a tuple, it's likely (logits, ...)
+        predictions = predictions[0]  # Take the first element which should be logits
+    
     if isinstance(predictions, dict):
         if 'loss' in predictions:
             return {"eval_loss": float(predictions['loss']), "error_rate": 1.0, "num_errors": 0}
@@ -156,7 +161,7 @@ def compute_metrics(eval_pred, compute_result=True):
     try:
         # For language modeling, predictions shape: (batch, seq_len, vocab_size)
         # labels shape: (batch, seq_len)
-        print(f"[compute_metrics] Predictions shape: {predictions.shape}, Labels shape: {labels.shape}", file=sys.stderr)
+        print(f"[compute_metrics] Predictions shape: {predictions.shape}, Labels shape: {labels.shape}")
         
         # Get predictions by argmax over vocab
         if isinstance(predictions, np.ndarray):
@@ -168,8 +173,8 @@ def compute_metrics(eval_pred, compute_result=True):
         preds = preds[:, :-1]  # Remove last prediction
         labels = labels[:, 1:]  # Remove first label
         
-        print(f"[compute_metrics] After shift - Preds shape: {preds.shape}, Labels shape: {labels.shape}", file=sys.stderr)
-        print(f"[compute_metrics] Sample preds: {preds[0,:5]}, Sample labels: {labels[0,:5]}", file=sys.stderr)
+        print(f"[compute_metrics] After shift - Preds shape: {preds.shape}, Labels shape: {labels.shape}")
+        print(f"[compute_metrics] Sample preds: {preds[0,:5]}, Sample labels: {labels[0,:5]}")
         
         # Only compute error where labels != -100 (ignore index)
         mask = labels != -100
@@ -178,25 +183,31 @@ def compute_metrics(eval_pred, compute_result=True):
         num_total = mask.sum()
         error_rate = num_errors / num_total if num_total > 0 else 0.0
         
-        print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}", file=sys.stderr)
+        print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}")
         
         # Compute cross entropy loss
         if isinstance(predictions, np.ndarray):
             predictions = torch.from_numpy(predictions)
+        
+        # Reshape predictions and labels for loss computation
+        predictions = predictions[:, :-1, :]  # Remove last prediction
+        predictions = predictions.reshape(-1, predictions.size(-1))
+        labels = labels.reshape(-1)
+        
         loss_fct = torch.nn.CrossEntropyLoss()
-        loss = loss_fct(predictions.view(-1, predictions.size(-1)), labels.view(-1))
+        loss = loss_fct(predictions, labels)
         
         if not compute_result:
             return None  # Don't return metrics for intermediate batches
             
         return {
             "eval_loss": float(loss),
-            "error_rate": float(error_rate),
-            "num_errors": int(num_errors)
+            "eval_error_rate": float(error_rate),  # Add eval_ prefix to match trainer expectations
+            "eval_num_errors": int(num_errors)     # Add eval_ prefix to match trainer expectations
         }
     except Exception as e:
-        print(f"Error computing metrics: {e}", file=sys.stderr)
-        return {"eval_loss": 0.0, "error_rate": 1.0, "num_errors": 0}
+        print(f"Error computing metrics: {e}")
+        return {"eval_loss": 0.0, "eval_error_rate": 1.0, "eval_num_errors": 0}
 
 def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator):
     """Set up the trainer with the appropriate arguments."""
@@ -213,22 +224,20 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
     os.makedirs(args.output_dir, exist_ok=True)
     
     training_args = TrainingArguments(
+        eval_on_start=True,  # Always evaluate at start
         output_dir=args.output_dir,
         overwrite_output_dir=True,
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size * 4,  # Increase eval batch size
+        per_device_eval_batch_size=args.batch_size,
         save_steps=500 if not args.save_all_checkpoints else args.save_all_checkpoints,
-        save_strategy="steps" if not args.eval_lengths else "no",
-        save_total_limit=2,  # Keep only the last 2 checkpoints
+        save_strategy="steps",
+        save_total_limit=None if args.save_all_checkpoints else 1,
         logging_dir='./logs',
-        # Evaluation settings
-        evaluation_strategy="steps",
-        eval_steps=500,  # Evaluate less frequently
-        logging_strategy="steps",
         logging_steps=100,
-        # Metric tracking
+        evaluation_strategy="steps",
+        eval_steps=100,
         batch_eval_metrics=True,
         remove_unused_columns=False,
         report_to="none" if args.disable_wandb else "wandb",
@@ -238,19 +247,14 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         seed=args.seed,
         data_seed=args.seed,
         full_determinism=args.full_determinism,
-        eval_accumulation_steps=1,
-        eval_delay=0,
-        label_smoothing_factor=0.0,
-        prediction_loss_only=False,
-        # Early stopping and model saving
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,
-        save_on_each_node=True,  # Save checkpoints on each node in distributed training
+        metric_for_best_model="eval_loss" if args.early_stopping else None,
+        greater_is_better=False if args.early_stopping else True,
+        load_best_model_at_end=True if args.early_stopping else False,
+        prediction_loss_only=False,  # Important: we want the full model outputs
     )
     
     print("\n=== Training Arguments ===")
-    print(f"Evaluation strategy: {training_args.eval_strategy}")
+    print(f"Evaluation strategy: {training_args.evaluation_strategy}")
     print(f"Evaluation steps: {training_args.eval_steps}")
     print(f"Batch eval metrics: {training_args.batch_eval_metrics}")
     print(f"Output directory: {args.output_dir}")
@@ -258,12 +262,16 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
     print("\nCreating trainer with compute_metrics function")
     trainer = Trainer(
         model=model,
+        processing_class=tokenizer,  # Add processing_class
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
     )
+    
+    if args.early_stopping:
+        trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=3))
     
     return trainer
 
@@ -404,47 +412,8 @@ def main():
 
             # Use the same training logic as the main branch
             train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
+            trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
             
-            # Create training arguments specifically for length generalization
-            training_args = TrainingArguments(
-                output_dir=args.output_dir,
-                overwrite_output_dir=True,
-                per_device_train_batch_size=args.batch_size,
-                per_device_eval_batch_size=args.batch_size * 4,
-                eval_on_start=True,  # Always evaluate at start
-                evaluation_strategy="steps",
-                eval_steps=1,  # Evaluate every step
-                logging_strategy="steps",
-                logging_steps=1,
-                save_strategy="no",  # Don't save checkpoints during length generalization
-                load_best_model_at_end=False,  # Don't try to load best model
-                remove_unused_columns=False,
-                report_to="none" if args.disable_wandb else "wandb",
-                dataloader_num_workers=1,
-                bf16=args.use_bfloat16,
-                max_grad_norm=1.0,
-                seed=args.seed,
-                data_seed=args.seed,
-                full_determinism=args.full_determinism,
-                prediction_loss_only=False,  # Important: we want the full model outputs
-                label_names=["labels"],  # Explicitly specify label names
-            )
-            
-            print("\n=== Setting up trainer for length generalization ===")
-            print(f"Train dataset size: {len(train_dataset)}")
-            print(f"Eval dataset size: {len(eval_dataset)}")
-            
-            trainer = Trainer(
-                model=model,
-                processing_class=tokenizer,  # Add processing_class
-                args=training_args,
-                train_dataset=train_dataset,
-                eval_dataset=eval_dataset,
-                data_collator=data_collator,
-                compute_metrics=compute_metrics,
-            )
-            
-            print("\n=== Starting evaluation ===")
             # Only evaluate, don't train
             metrics = trainer.evaluate()
             print("\n=== Evaluation metrics ===")
