@@ -6,6 +6,7 @@ import numpy as np
 import wandb
 import random
 import matplotlib.pyplot as plt
+import sys
 
 from transformers import (
     TrainingArguments, 
@@ -65,6 +66,7 @@ def parse_arguments():
                         "each length given here, e.g. 8,16,24,32")
     parser.add_argument("--T1_num_layers", type=int, default=1, help="Number of layers for T1 in the tree model")
     parser.add_argument("--T2_num_layers", type=int, default=1, help="Number of layers for T2 in the tree model")
+    parser.add_argument("--eval_ratio", type=float, default=0.01, help="Ratio of dataset to use for evaluation (default: 0.01 or 1%)")
     return parser.parse_args()
 
 def setup_data_collator(args, tokenizer, state_tokens, parity=None, layerwise_supervision_config=None):
@@ -110,7 +112,7 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False,tr
     # Split into train/test
     print(f"Loaded full dataset with {len(full_dataset)} samples")
     total_size = len(full_dataset)
-    train_size = int(0.95 * total_size)
+    train_size = int((1 - args.eval_ratio) * total_size)
     
     if args.full_determinism or args.data_determinism:
         # Use a fixed split by taking the first train_size examples for training
@@ -135,62 +137,98 @@ def prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=False,tr
 
 
 def compute_metrics(eval_pred, compute_result=True):
-    logits, labels = eval_pred
-    logits = logits['logits']
-    #print("logits shape: ", logits.shape)
-    # For language modeling, logits shape: (batch, seq_len, vocab_size)
-    # labels shape: (batch, seq_len)
-    # Get predictions by argmax over vocab
-    if isinstance(logits, np.ndarray):
-        preds = torch.from_numpy(np.argmax(logits, axis=-1))
+    """Compute metrics for evaluation."""
+    # Unpack predictions and labels
+    if isinstance(eval_pred, tuple):
+        predictions, labels = eval_pred
     else:
-        preds = torch.argmax(logits, dim=-1)
-    # Shift predictions to align with labels (predictions start at position 1)
-    preds = preds[:, :-1]  # Remove last prediction
-    labels = labels[:, 1:]  # Remove first label
-    #print(f"[compute_metrics] Preds: {preds[0,:5]}, Labels: {labels[0,:5]}")
-    # Only compute error where labels != -100 (ignore index)
-    mask = labels != -100
-    errors = (preds != labels) & mask
-    num_errors = errors.sum()
-    num_total = mask.sum()
-    error_rate = num_errors / num_total if num_total > 0 else 0.0
-    print(f"[compute_metrics] Batch shape logits: {logits.shape}, labels: {labels.shape}")
-    #print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}")
-    if not compute_result:
-        return None  # Don't return metrics for intermediate batches
+        return {"eval_loss": 0.0, "error_rate": 1.0, "num_errors": 0}
     
-    # Compute cross entropy loss
-    if isinstance(logits, np.ndarray):
-        logits = torch.from_numpy(logits)
-    loss_fct = torch.nn.CrossEntropyLoss()
-    loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+    # Handle different prediction formats
+    if isinstance(predictions, dict):
+        if 'loss' in predictions:
+            return {"eval_loss": float(predictions['loss']), "error_rate": 1.0, "num_errors": 0}
+        elif 'logits' in predictions:
+            predictions = predictions['logits']
+        else:
+            return {"eval_loss": 0.0, "error_rate": 1.0, "num_errors": 0}
     
-    return {
-        "eval_loss": float(loss),  # Add eval_loss for both models
-        "num_errors": int(num_errors),
-        "error_rate": float(error_rate)
-    }
+    try:
+        # For language modeling, predictions shape: (batch, seq_len, vocab_size)
+        # labels shape: (batch, seq_len)
+        print(f"[compute_metrics] Predictions shape: {predictions.shape}, Labels shape: {labels.shape}", file=sys.stderr)
+        
+        # Get predictions by argmax over vocab
+        if isinstance(predictions, np.ndarray):
+            preds = torch.from_numpy(np.argmax(predictions, axis=-1))
+        else:
+            preds = torch.argmax(predictions, dim=-1)
+            
+        # Shift predictions to align with labels (predictions start at position 1)
+        preds = preds[:, :-1]  # Remove last prediction
+        labels = labels[:, 1:]  # Remove first label
+        
+        print(f"[compute_metrics] After shift - Preds shape: {preds.shape}, Labels shape: {labels.shape}", file=sys.stderr)
+        print(f"[compute_metrics] Sample preds: {preds[0,:5]}, Sample labels: {labels[0,:5]}", file=sys.stderr)
+        
+        # Only compute error where labels != -100 (ignore index)
+        mask = labels != -100
+        errors = (preds != labels) & mask
+        num_errors = errors.sum()
+        num_total = mask.sum()
+        error_rate = num_errors / num_total if num_total > 0 else 0.0
+        
+        print(f"[compute_metrics] Num errors: {num_errors}, Num total: {num_total}, Error rate: {error_rate:.4f}", file=sys.stderr)
+        
+        # Compute cross entropy loss
+        if isinstance(predictions, np.ndarray):
+            predictions = torch.from_numpy(predictions)
+        loss_fct = torch.nn.CrossEntropyLoss()
+        loss = loss_fct(predictions.view(-1, predictions.size(-1)), labels.view(-1))
+        
+        if not compute_result:
+            return None  # Don't return metrics for intermediate batches
+            
+        return {
+            "eval_loss": float(loss),
+            "error_rate": float(error_rate),
+            "num_errors": int(num_errors)
+        }
+    except Exception as e:
+        print(f"Error computing metrics: {e}", file=sys.stderr)
+        return {"eval_loss": 0.0, "error_rate": 1.0, "num_errors": 0}
 
 def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator):
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
-    wandb.init(project="state-tracking", name=args.output_dir)
+    
+    # Print debug information about the datasets
+    print("\n=== Dataset Information ===")
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Eval dataset size: {len(eval_dataset)}")
+    if len(eval_dataset) > 0:
+        print("First eval sample:", eval_dataset[0])
+    
+    # Ensure output directory exists
+    os.makedirs(args.output_dir, exist_ok=True)
+    
     training_args = TrainingArguments(
-        eval_on_start=True,  # Always evaluate at start
         output_dir=args.output_dir,
         overwrite_output_dir=True,
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size * 4,  # Increase eval batch size
         save_steps=500 if not args.save_all_checkpoints else args.save_all_checkpoints,
-        save_strategy="steps",
-        save_total_limit=None if args.save_all_checkpoints else 1,
+        save_strategy="steps" if not args.eval_lengths else "no",
+        save_total_limit=2,  # Keep only the last 2 checkpoints
         logging_dir='./logs',
+        # Evaluation settings
+        evaluation_strategy="steps",
+        eval_steps=500,  # Evaluate less frequently
+        logging_strategy="steps",
         logging_steps=100,
-        eval_strategy="steps" if args.early_stopping else "epoch",
-        eval_steps=100 if args.early_stopping else None,
+        # Metric tracking
         batch_eval_metrics=True,
         remove_unused_columns=False,
         report_to="none" if args.disable_wandb else "wandb",
@@ -200,29 +238,32 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         seed=args.seed,
         data_seed=args.seed,
         full_determinism=args.full_determinism,
-        metric_for_best_model="eval_loss" if args.early_stopping else None,
-        greater_is_better=False if args.early_stopping else True,
-        load_best_model_at_end=True if args.early_stopping else False,
-        # Add these arguments to ensure eval_loss is computed
-        evaluation_strategy="steps",
-        eval_steps=1,
-        save_strategy="no",
-        logging_strategy="steps",
-        logging_steps=1,
+        eval_accumulation_steps=1,
+        eval_delay=0,
+        label_smoothing_factor=0.0,
+        prediction_loss_only=False,
+        # Early stopping and model saving
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        save_on_each_node=True,  # Save checkpoints on each node in distributed training
     )
     
+    print("\n=== Training Arguments ===")
+    print(f"Evaluation strategy: {training_args.eval_strategy}")
+    print(f"Evaluation steps: {training_args.eval_steps}")
+    print(f"Batch eval metrics: {training_args.batch_eval_metrics}")
+    print(f"Output directory: {args.output_dir}")
+    
+    print("\nCreating trainer with compute_metrics function")
     trainer = Trainer(
         model=model,
-        processing_class=tokenizer,
         args=training_args,
-        data_collator=data_collator,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
     )
-    
-    if args.early_stopping:
-        trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=3))
     
     return trainer
 
@@ -363,17 +404,59 @@ def main():
 
             # Use the same training logic as the main branch
             train_dataset, eval_dataset = prepare_dataset(args, tokenizer, state_tokens, data_collator, debug=args.debug)
-            trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
             
+            # Create training arguments specifically for length generalization
+            training_args = TrainingArguments(
+                output_dir=args.output_dir,
+                overwrite_output_dir=True,
+                per_device_train_batch_size=args.batch_size,
+                per_device_eval_batch_size=args.batch_size * 4,
+                eval_on_start=True,  # Always evaluate at start
+                evaluation_strategy="steps",
+                eval_steps=1,  # Evaluate every step
+                logging_strategy="steps",
+                logging_steps=1,
+                save_strategy="no",  # Don't save checkpoints during length generalization
+                load_best_model_at_end=False,  # Don't try to load best model
+                remove_unused_columns=False,
+                report_to="none" if args.disable_wandb else "wandb",
+                dataloader_num_workers=1,
+                bf16=args.use_bfloat16,
+                max_grad_norm=1.0,
+                seed=args.seed,
+                data_seed=args.seed,
+                full_determinism=args.full_determinism,
+                prediction_loss_only=False,  # Important: we want the full model outputs
+                label_names=["labels"],  # Explicitly specify label names
+            )
+            
+            print("\n=== Setting up trainer for length generalization ===")
+            print(f"Train dataset size: {len(train_dataset)}")
+            print(f"Eval dataset size: {len(eval_dataset)}")
+            
+            trainer = Trainer(
+                model=model,
+                processing_class=tokenizer,  # Add processing_class
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                data_collator=data_collator,
+                compute_metrics=compute_metrics,
+            )
+            
+            print("\n=== Starting evaluation ===")
             # Only evaluate, don't train
             metrics = trainer.evaluate()
+            print("\n=== Evaluation metrics ===")
             print("metrics:", metrics)
+            
             if "eval_loss" in metrics:
                 results[L] = metrics["eval_loss"]
             if "eval_error_rate" in metrics:
                 error_rates[L] = metrics["eval_error_rate"]
             else:
-                print("No eval_loss returned for sequence length", L)
+                print("Warning: No eval_error_rate in metrics")
+                print("Available metrics:", metrics.keys())
             
             # Restore original max_len
             args.max_len = original_max_len

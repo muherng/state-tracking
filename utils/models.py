@@ -157,27 +157,40 @@ class TreeModel(TransformerScanModel):
 
         # final logits
         final_logits = outputs["logits"]
-        #print('final_logits: ', final_logits.shape)
         shift_logits = final_logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
-        #print('shift_labels: ', shift_labels.shape)
-        loss += loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-        debug=False
-        if debug: 
-            # --- New code to measure misclassification of the last token ---
-            # Compute predictions via argmax over vocabulary.
-            predicted_tokens = shift_logits.argmax(dim=-1)  # shape: (batch, seq_len-1)
-            print('predicted_tokens: ', predicted_tokens[0,:])
-            print('shift_labels: ', shift_labels[0,:])
-            # For the last token in each sample, index -1 across the sequence dimension.
-            last_token_preds = predicted_tokens[:, -1]
-            last_token_targets = shift_labels[:, -1]
-            # Compare predictions and targets.
-            mismatches = (last_token_preds != last_token_targets).float()
-            avg_last_token_error = mismatches.mean().item()
-            print(f"Average error rate on the last token in batch: {avg_last_token_error:.4f}")
-            # You could also print some example tokens:
-            for i in range(min(3, predicted_tokens.size(0))):
-                print(f"Sample {i}: True last token: {last_token_targets[i].item()}, Predicted: {last_token_preds[i].item()}")
-            # --- end new code ---
-        return loss, outputs
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        
+        # Return the loss in the outputs dictionary
+        outputs["loss"] = loss
+        return outputs
+
+
+class GPT2DirectSupervisionModel(GPT2LMHeadModel):
+    """GPT2 model with direct supervision that handles label shifting correctly."""
+    
+    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
+        # First get the base model outputs
+        outputs = super().forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=None,  # Don't pass labels to base model
+            output_hidden_states=True,
+            return_dict=True,
+            **kwargs
+        )
+        
+        if labels is not None:
+            # Shift labels and logits for direct supervision
+            shift_logits = outputs.logits[..., :-1, :].contiguous()  # a b c d e -> a b c d
+            shift_labels = labels[..., 1:].contiguous()  # a b c d e -> b c d e
+            
+            # Compute loss
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            
+            # Add loss to outputs
+            outputs.loss = loss
+            outputs['loss'] = loss
+            
+        return outputs

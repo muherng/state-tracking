@@ -710,3 +710,44 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+class TreeModel(TransformerScanModel):
+    """Tree model with direct output supervision."""
+    
+    def __init__(self, config, chunk_size= 32, T1_num_layers = 1, T2_num_layers = 1):
+        super().__init__(config, chunk_size=chunk_size, T1_num_layers = T1_num_layers, T2_num_layers = T2_num_layers)
+    
+    def forward(self, input_ids,
+        attention_mask=None,
+        labels=None,
+        **kwargs):
+        outputs = super().forward(input_ids, attention_mask=attention_mask, labels=None, output_hidden_states=True, return_dict=True)
+        loss = 0
+        loss_fct = nn.CrossEntropyLoss()
+
+        # final logits
+        final_logits = outputs["logits"]
+        #print('final_logits: ', final_logits.shape)
+        shift_logits = final_logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        #print('shift_labels: ', shift_labels.shape)
+        loss += loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        debug=False
+        if debug: 
+            # --- New code to measure misclassification of the last token ---
+            # Compute predictions via argmax over vocabulary.
+            predicted_tokens = shift_logits.argmax(dim=-1)  # shape: (batch, seq_len-1)
+            print('predicted_tokens: ', predicted_tokens[0,:])
+            print('shift_labels: ', shift_labels[0,:])
+            # For the last token in each sample, index -1 across the sequence dimension.
+            last_token_preds = predicted_tokens[:, -1]
+            last_token_targets = shift_labels[:, -1]
+            # Compare predictions and targets.
+            mismatches = (last_token_preds != last_token_targets).float()
+            avg_last_token_error = mismatches.mean().item()
+            print(f"Average error rate on the last token in batch: {avg_last_token_error:.4f}")
+            # You could also print some example tokens:
+            for i in range(min(3, predicted_tokens.size(0))):
+                print(f"Sample {i}: True last token: {last_token_targets[i].item()}, Predicted: {last_token_preds[i].item()}")
+            # --- end new code ---
+        return loss, outputs
