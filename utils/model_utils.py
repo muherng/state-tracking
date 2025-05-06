@@ -24,7 +24,8 @@ from utils.models import (
     LlamaModelWithLayerTargets,
     PythiaModelWithLayerTargets,
     TreeModel,
-    GPT2MaskedLMHeadModel
+    GPT2MaskedLMHeadModel,
+    MambaModelWithLayerTargets
 )
 
 from utils.tree import TransformerScanModel
@@ -100,6 +101,22 @@ def setup_model(tokenizer, model_name=None, checkpoint_path=None, use_bfloat16=F
             else: 
                 model = TreeModel(config, chunk_size=chunk_size,
                                             T1_num_layers=T1_num_layers, T2_num_layers=T2_num_layers)
+        elif "mamba" in model_name.lower():
+            if checkpoint_path:
+                print(f"Loading Mamba model from checkpoint: {checkpoint_path}")
+                model = MambaModelWithLayerTargets.from_pretrained(
+                    checkpoint_path,
+                    device_map="auto",
+                    torch_dtype=torch.bfloat16 if use_bfloat16 else torch.float32,
+                    layerwise_supervision_config=layerwise_supervision_config,
+                )
+            else:
+                model = MambaModelWithLayerTargets.from_pretrained(
+                    model_name,
+                    device_map="auto",
+                    torch_dtype=torch.bfloat16 if use_bfloat16 else torch.float32,
+                    layerwise_supervision_config=layerwise_supervision_config,
+                )
         elif "gpt" in model_name.lower():
             if checkpoint_path:
                 print(f"Loading model from checkpoint: {checkpoint_path}")

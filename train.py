@@ -35,7 +35,8 @@ def parse_arguments():
         "gpt2", "gpt2-large", "gpt2-medium", "gpt2-xl", "distilgpt2",
         "EleutherAI/pythia-70M", "EleutherAI/pythia-160M", "EleutherAI/pythia-410M",
         "EleutherAI/pythia-1B", "EleutherAI/pythia-1.4B", "EleutherAI/pythia-2.8B",
-        "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B","tree"
+        "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B", "tree",
+        "state-spaces/mamba-130m", "state-spaces/mamba-370m", "state-spaces/mamba-790m", "state-spaces/mamba-1.4b"
     ])
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--output_dir", type=str, default="saved_models")
@@ -445,6 +446,23 @@ def main():
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # Create plot_data directory
+        plot_data_dir = os.path.join(args.output_dir, "plot_data")
+        os.makedirs(plot_data_dir, exist_ok=True)
+
+        # Save raw data
+        data = {
+            "model": args.model,
+            "lengths": xs,
+            "losses": ys,
+            "error_rates": [error_rates[x] for x in xs] if error_rates else None,
+            "timestamp": timestamp
+        }
+        data_path = os.path.join(plot_data_dir, f"length_generalization_data_{timestamp}.json")
+        with open(data_path, "w") as f:
+            json.dump(data, f)
+        print(f"\nData saved → {data_path}")
+
         plot_path = os.path.join(args.output_dir,
                                  f"length_generalisation_loss_{timestamp}.png")
         plt.savefig(plot_path, bbox_inches="tight")
@@ -460,7 +478,7 @@ def main():
             plt.xlabel("Sequence length")
             plt.ylabel("Error rate")
             plt.ylim(0, 1)
-            plt.title("Length‑generalisation error rate")
+            plt.title(f"{args.model} Length‑generalisation error rate")
             plt.grid(True)
 
             plot_path = os.path.join(args.output_dir,

@@ -1,6 +1,7 @@
 from torch import nn
 from torch.nn import CrossEntropyLoss
 from transformers import GPT2LMHeadModel, LlamaForCausalLM, GPTNeoXForCausalLM
+from transformers import AutoModelForCausalLM
 
 from utils.tree import TransformerScanModel 
 
@@ -193,4 +194,45 @@ class GPT2DirectSupervisionModel(GPT2LMHeadModel):
             outputs.loss = loss
             outputs['loss'] = loss
             
+        return outputs
+
+
+class MambaModelWithLayerTargets(AutoModelForCausalLM):
+    """Mamba model with layer-wise supervision support."""
+    
+    def __init__(self, config, layerwise_supervision_config=None):
+        super().__init__(config)
+        self.layerwise_supervision_config = layerwise_supervision_config
+        self.layer_outputs = {}
+        
+    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
+        outputs = super().forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=None,  # Don't pass labels to base model
+            output_hidden_states=True,
+            return_dict=True,
+            **kwargs
+        )
+        
+        if labels is not None:
+            # Shift labels and logits for direct supervision
+            shift_logits = outputs.logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            
+            # Compute loss
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            
+            # Add loss to outputs
+            outputs.loss = loss
+            outputs['loss'] = loss
+            
+            # Store layer outputs if layerwise supervision is configured
+            if self.layerwise_supervision_config:
+                for layer_name in self.layerwise_supervision_config:
+                    if hasattr(self, layer_name):
+                        layer_output = getattr(self, layer_name)
+                        self.layer_outputs[layer_name] = layer_output
+        
         return outputs
