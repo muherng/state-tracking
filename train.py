@@ -35,8 +35,7 @@ def parse_arguments():
         "gpt2", "gpt2-large", "gpt2-medium", "gpt2-xl", "distilgpt2",
         "EleutherAI/pythia-70M", "EleutherAI/pythia-160M", "EleutherAI/pythia-410M",
         "EleutherAI/pythia-1B", "EleutherAI/pythia-1.4B", "EleutherAI/pythia-2.8B",
-        "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B", "tree",
-        "state-spaces/mamba-130m", "state-spaces/mamba-370m", "state-spaces/mamba-790m", "state-spaces/mamba-1.4b"
+        "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B","tree"
     ])
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--output_dir", type=str, default="saved_models")
