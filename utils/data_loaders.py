@@ -81,14 +81,15 @@ class ChunkedDataset:
             filename = self.file_index_map[current_file_idx][2]
             with open(os.path.join(self.data_dir, filename), 'r') as f:
                 data = json.load(f)
-                for k in data:
-                    if k not in self.current_chunk:
-                        self.current_chunk[k] = []
-
-                    if k == "story":
-                        self.current_chunk[k].append(" ".join(data[k].split()[:self.max_len+1]))
-                    else:
-                        self.current_chunk[k].append(data[k][:self.max_len+1])
+                # Initialize lists if not already done
+                if "story" not in self.current_chunk:
+                    self.current_chunk["story"] = []
+                if "state_seq" not in self.current_chunk:
+                    self.current_chunk["state_seq"] = []
+                
+                # Add data to current chunk
+                self.current_chunk["story"].append(" ".join(data["story"].split()[:self.max_len+1]))
+                self.current_chunk["state_seq"].append(data["state_seq"][:self.max_len+1])
             items_loaded += 1
             if items_loaded >= self.chunk_size:
                 break
@@ -112,7 +113,10 @@ class ChunkedDataset:
             self.load_chunk(idx)
 
         chunk_idx = idx - self.current_chunk_start
-        return {k: self.current_chunk[k][chunk_idx] for k in self.current_chunk}
+        return {
+            "story": self.current_chunk["story"][chunk_idx],
+            "state_seq": self.current_chunk["state_seq"][chunk_idx]
+        }
 
     def map(self, function, batched=True, remove_columns=None, **kwargs):
         """Apply a function to the dataset."""
