@@ -256,13 +256,13 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     # Get logits from the last hidden state
     logits = outputs.logits if hasattr(outputs, 'logits') else outputs
     
-    # Shift input_ids to get labels (next token prediction)
-    labels = inputs['input_ids'][:, 1:]
-    logits = logits[:, :-1, :]
+    # For direct supervision, shift both logits and labels by one position
+    shift_logits = logits[..., :-1, :].contiguous()  # a b c d e -> a b c d
+    shift_labels = inputs['labels'][..., 1:].contiguous()  # a b c d e -> b c d e
     
     # Compute loss
     loss_fct = torch.nn.CrossEntropyLoss()
-    loss = loss_fct(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+    loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.reshape(-1))
     
     return (loss, outputs) if return_outputs else loss
 
@@ -333,13 +333,20 @@ def main():
     print(f"\nLoading model from {model_name}...")
     
     # Create config with correct vocabulary size
-    config = MambaConfig.from_pretrained(model_name)
-    config.vocab_size = len(tokenizer)
+    config = MambaConfig(
+        vocab_size=len(tokenizer),
+        d_model=2560,  # From mamba-130m config
+        n_layer=24,    # From mamba-130m config
+        ssm_cfg={},
+        rms_norm=True,
+        residual_in_fp32=True,
+        fused_add_norm=True,
+        pad_vocab_size_multiple=8
+    )
     print('vocab_size:', config.vocab_size)
     
     # Load model with new config
-    model = MambaLMHeadModel.from_pretrained(
-        model_name,
+    model = MambaLMHeadModel(
         config=config,
         device="cuda" if torch.cuda.is_available() else "cpu",
         dtype=torch.bfloat16 if args.use_bfloat16 else torch.float32,
