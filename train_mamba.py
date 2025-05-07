@@ -112,7 +112,12 @@ def setup_data_collator(args, tokenizer, state_tokens, parity=None):
             # Make labels same shape as input_ids
             batch["labels"] = labels[:, :batch["input_ids"].size(1)]
             
-            return batch
+            # For Mamba, we need to separate input_ids and labels
+            # as the model only accepts input_ids
+            return {
+                'input_ids': batch['input_ids'],
+                'labels': batch['labels']
+            }
 
     return MambaDataCollator(tokenizer, args.max_len, state_tokens, "state_seq")
 
@@ -346,7 +351,7 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     """
     Custom loss computation for Mamba model
     """
-    # Get model outputs - Mamba doesn't use attention_mask
+    # Get model outputs - Mamba only needs input_ids
     outputs = model(input_ids=inputs['input_ids'])
     
     # Get logits from the last hidden state
@@ -360,7 +365,9 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     loss_fct = torch.nn.CrossEntropyLoss()
     loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.reshape(-1))
     
-    return (loss, outputs) if return_outputs else loss
+    if return_outputs:
+        return (loss, outputs)
+    return loss
 
 def save_checkpoint(model, tokenizer, output_dir, checkpoint_name):
     """Save a checkpoint with the given name."""
@@ -596,8 +603,8 @@ def main():
             train_dataset, eval_dataset = prepare_dataset(args, debug=args.debug)
             trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
             
-            # Use trainer.evaluate() instead of evaluate_model to get proper metrics
-            metrics = trainer.evaluate()
+            # Use evaluate_model which already works with Mamba
+            metrics = evaluate_model(model, eval_dataset, args.batch_size, data_collator)
             print("\n=== Evaluation metrics ===")
             print("metrics:", metrics)
             
