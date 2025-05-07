@@ -332,9 +332,15 @@ def main():
     model_name = "state-spaces/mamba-130m"
     print(f"\nLoading model from {model_name}...")
     
-    # Load model directly
+    # Create config with correct vocabulary size
+    config = MambaConfig.from_pretrained(model_name)
+    config.vocab_size = len(tokenizer)
+    print('vocab_size:', config.vocab_size)
+    
+    # Load model with new config
     model = MambaLMHeadModel.from_pretrained(
         model_name,
+        config=config,
         device="cuda" if torch.cuda.is_available() else "cpu",
         dtype=torch.bfloat16 if args.use_bfloat16 else torch.float32,
     )
