@@ -596,38 +596,80 @@ def main():
             train_dataset, eval_dataset = prepare_dataset(args, debug=args.debug)
             trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
             
-            metrics = evaluate_model(model, eval_dataset, args.batch_size, data_collator)
+            # Use trainer.evaluate() instead of evaluate_model to get proper metrics
+            metrics = trainer.evaluate()
             print("\n=== Evaluation metrics ===")
             print("metrics:", metrics)
             
             if "eval_loss" in metrics:
                 results[L] = metrics["eval_loss"]
+            if "eval_error_rate" in metrics:
+                error_rates[L] = metrics["eval_error_rate"]
             
-            # Plot results
-            if error_rates:
-                xs = sorted(error_rates.keys())
-                ys = [error_rates[x] for x in xs]
+            # Restore original max_len
+            args.max_len = original_max_len
 
-                plt.figure()
-                plt.plot(xs, ys, marker="o")
-                plt.xlabel("Sequence length")
-                plt.ylabel("Error rate")
-                plt.ylim(0, 1)
-                plt.title(f"Mamba Length‑generalisation error rate")
-                plt.grid(True)
+        # ---- PLOT: eval‑loss vs. sequence length ----
+        xs = sorted(results.keys())
+        ys = [results[x] for x in xs]
 
-                plot_path = os.path.join(args.output_dir, f"length_generalisation_error.png")
-                plt.savefig(plot_path, bbox_inches="tight")
-                print(f"\nError rate plot saved → {plot_path}")
+        plt.figure()
+        plt.plot(xs, ys, marker="o")
+        plt.xlabel("Sequence length")
+        plt.ylabel("Evaluation loss")
+        plt.ylim(0, 20)
+        plt.title("Length‑generalisation performance")
+        plt.grid(True)
 
-            print("\n======  Summary  ======")
-            for L in sorted(results.keys()):
-                print(f"L={L:>3}  |  eval_loss = {results[L]:.4f}", end="")
-                if L in error_rates:
-                    print(f"  |  error_rate = {error_rates[L]:.4f}")
-                else:
-                    print()
-            return
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Create plot_data directory
+        plot_data_dir = os.path.join(args.output_dir, "plot_data")
+        os.makedirs(plot_data_dir, exist_ok=True)
+
+        # Save raw data
+        data = {
+            "model": "mamba",
+            "lengths": xs,
+            "losses": ys,
+            "error_rates": [error_rates[x] for x in xs] if error_rates else None,
+            "timestamp": timestamp
+        }
+        data_path = os.path.join(plot_data_dir, f"length_generalization_data_{timestamp}.json")
+        with open(data_path, "w") as f:
+            json.dump(data, f)
+        print(f"\nData saved → {data_path}")
+
+        plot_path = os.path.join(args.output_dir, f"length_generalisation_loss_{timestamp}.png")
+        plt.savefig(plot_path, bbox_inches="tight")
+        print(f"\nLoss plot saved → {plot_path}")
+
+        # ---- PLOT: error rate vs. sequence length ----
+        if error_rates:
+            xs = sorted(error_rates.keys())
+            ys = [error_rates[x] for x in xs]
+
+            plt.figure()
+            plt.plot(xs, ys, marker="o")
+            plt.xlabel("Sequence length")
+            plt.ylabel("Error rate")
+            plt.ylim(0, 1)
+            plt.title(f"Mamba Length‑generalisation error rate")
+            plt.grid(True)
+
+            plot_path = os.path.join(args.output_dir, f"length_generalisation_error_{timestamp}.png")
+            plt.savefig(plot_path, bbox_inches="tight")
+            print(f"\nError rate plot saved → {plot_path}")
+
+        print("\n======  Summary  ======")
+        for L in sorted(results.keys()):
+            print(f"L={L:>3}  |  eval_loss = {results[L]:.4f}", end="")
+            if L in error_rates:
+                print(f"  |  error_rate = {error_rates[L]:.4f}")
+            else:
+                print()
+        return
 
     # Regular training path
     train_dataset, eval_dataset = prepare_dataset(args, debug=args.debug)
