@@ -303,40 +303,72 @@ def load_checkpoint(model, tokenizer, checkpoint_dir):
     """Load a checkpoint from the given directory."""
     print(f"Loading checkpoint from {checkpoint_dir}")
     
+    # Print some model parameters before loading
+    print("\nModel parameters before loading checkpoint:")
+    for name, param in model.named_parameters():
+        if "weight" in name:
+            print(f"{name}: mean={param.mean().item():.4f}, std={param.std().item():.4f}")
+            break  # Just print first weight parameter as example
+    
     # Load model state dict
     state_dict = torch.load(os.path.join(checkpoint_dir, "pytorch_model.bin"))
     model.load_state_dict(state_dict)
     
-    # Load tokenizer config
-    with open(os.path.join(checkpoint_dir, "tokenizer_config.json"), "r") as f:
-        tokenizer_config = json.load(f)
+    # Print same parameters after loading
+    print("\nModel parameters after loading checkpoint:")
+    for name, param in model.named_parameters():
+        if "weight" in name:
+            print(f"{name}: mean={param.mean().item():.4f}, std={param.std().item():.4f}")
+            break  # Just print first weight parameter as example
     
-    # Load tokenizer
-    tokenizer = PreTrainedTokenizerFast.from_pretrained(
-        checkpoint_dir,
-        tokenizer_file=os.path.join(checkpoint_dir, "tokenizer.json"),
-        **tokenizer_config
-    )
+    # Check if tokenizer files exist
+    tokenizer_config_path = os.path.join(checkpoint_dir, "tokenizer_config.json")
+    tokenizer_file_path = os.path.join(checkpoint_dir, "tokenizer.json")
+    
+    if os.path.exists(tokenizer_config_path) and os.path.exists(tokenizer_file_path):
+        # Load tokenizer config
+        with open(tokenizer_config_path, "r") as f:
+            tokenizer_config = json.load(f)
+        
+        # Load tokenizer
+        tokenizer = PreTrainedTokenizerFast.from_pretrained(
+            checkpoint_dir,
+            tokenizer_file=tokenizer_file_path,
+            **tokenizer_config
+        )
+    else:
+        print("Tokenizer files not found in checkpoint. Using current tokenizer.")
+        # Keep using the current tokenizer since it's already set up correctly
+        pass
     
     return model, tokenizer
 
 def compute_metrics(eval_pred, compute_result=True):
     """Compute metrics for evaluation."""
+    print("\n=== compute_metrics called ===")
+    print("eval_pred type:", type(eval_pred))
+    print("compute_result:", compute_result)
+    
     try:
         logits, labels = eval_pred
+        print(f"[compute_metrics] Logits shape: {logits.shape}, Labels shape: {labels.shape}")
+        
         # Shift logits and labels for next token prediction
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
+        print(f"[compute_metrics] After shift - Logits shape: {shift_logits.shape}, Labels shape: {shift_labels.shape}")
         
         # Compute loss
         loss_fct = torch.nn.CrossEntropyLoss()
         loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.reshape(-1))
+        print(f"[compute_metrics] Computed loss: {float(loss):.4f}")
         
         # Compute error rate (percentage of incorrect predictions)
         predictions = torch.argmax(shift_logits, dim=-1)
         num_errors = (predictions != shift_labels).sum().item()
         total_tokens = shift_labels.numel()
         error_rate = num_errors / total_tokens if total_tokens > 0 else 1.0
+        print(f"[compute_metrics] Num errors: {num_errors}, Num total: {total_tokens}, Error rate: {error_rate:.4f}")
         
         return {
             "eval_loss": float(loss),
