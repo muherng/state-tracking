@@ -5,10 +5,12 @@ import argparse
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+import wandb
 from transformers import (
     Trainer,
     TrainingArguments,
     EarlyStoppingCallback,
+    PreTrainedTokenizerFast,
 )
 from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel, MambaConfig
 from utils.data_loaders import ChunkedDataset
@@ -41,7 +43,7 @@ def parse_arguments():
     parser.add_argument("--full_determinism", action="store_true", default=False)
     parser.add_argument("--early_stopping", action="store_true", default=True)
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
-    parser.add_argument("--disable_wandb", action="store_true", default=True)
+    parser.add_argument("--disable_wandb", type=bool, default=True, help="Set to False to enable wandb logging")
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--num_stories", type=int, default=10000)
     parser.add_argument("--generate_dataset", action="store_true", default=False)
@@ -203,6 +205,13 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
     
+    # Print debug information about the datasets
+    print("\n=== Dataset Information ===")
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Eval dataset size: {len(eval_dataset)}")
+    if len(eval_dataset) > 0:
+        print("First eval sample:", eval_dataset[0])
+    
     os.makedirs(args.output_dir, exist_ok=True)
     
     training_args = TrainingArguments(
@@ -225,12 +234,17 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         full_determinism=args.full_determinism,
     )
     
+    print("\n=== Training Arguments ===")
+    print(f"Output directory: {args.output_dir}")
+    
+    print("\nCreating trainer with compute_metrics function")
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
+        compute_metrics=compute_metrics,
     )
     
     # Override the save_model method
@@ -272,6 +286,17 @@ def save_checkpoint(model, tokenizer, output_dir, checkpoint_name):
     # Save tokenizer
     tokenizer.save_pretrained(checkpoint_dir)
     
+    # Save tokenizer config
+    tokenizer_config = {
+        "tokenizer_class": "PreTrainedTokenizerFast",
+        "model_type": "mamba",
+        "unk_token": "[UNK]",
+        "pad_token": "[PAD]",
+        "eos_token": "[EOS]"
+    }
+    with open(os.path.join(checkpoint_dir, "tokenizer_config.json"), "w") as f:
+        json.dump(tokenizer_config, f, indent=2)
+    
     print(f"Saved checkpoint to {checkpoint_dir}")
 
 def load_checkpoint(model, tokenizer, checkpoint_dir):
@@ -282,10 +307,45 @@ def load_checkpoint(model, tokenizer, checkpoint_dir):
     state_dict = torch.load(os.path.join(checkpoint_dir, "pytorch_model.bin"))
     model.load_state_dict(state_dict)
     
+    # Load tokenizer config
+    with open(os.path.join(checkpoint_dir, "tokenizer_config.json"), "r") as f:
+        tokenizer_config = json.load(f)
+    
     # Load tokenizer
-    tokenizer = tokenizer.from_pretrained(checkpoint_dir)
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(
+        checkpoint_dir,
+        tokenizer_file=os.path.join(checkpoint_dir, "tokenizer.json"),
+        **tokenizer_config
+    )
     
     return model, tokenizer
+
+def compute_metrics(eval_pred, compute_result=True):
+    """Compute metrics for evaluation."""
+    try:
+        logits, labels = eval_pred
+        # Shift logits and labels for next token prediction
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        
+        # Compute loss
+        loss_fct = torch.nn.CrossEntropyLoss()
+        loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.reshape(-1))
+        
+        # Compute error rate (percentage of incorrect predictions)
+        predictions = torch.argmax(shift_logits, dim=-1)
+        num_errors = (predictions != shift_labels).sum().item()
+        total_tokens = shift_labels.numel()
+        error_rate = num_errors / total_tokens if total_tokens > 0 else 1.0
+        
+        return {
+            "eval_loss": float(loss),
+            "eval_error_rate": float(error_rate),
+            "eval_num_errors": int(num_errors)
+        }
+    except Exception as e:
+        print(f"Error computing metrics: {e}")
+        return {"eval_loss": 0.0, "eval_error_rate": 1.0, "eval_num_errors": 0}
 
 def main():
     """Main function."""
@@ -356,7 +416,13 @@ def main():
     tokenizer = setup_tokenizer("mamba", state_tokens, action_tokens)
     
     # Load or initialize Mamba model
-    model_name = "state-spaces/mamba-130m"
+    # Available Mamba model sizes:
+    # - state-spaces/mamba-130m (default)
+    # - state-spaces/mamba-370m
+    # - state-spaces/mamba-790m
+    # - state-spaces/mamba-1.4b
+    # - state-spaces/mamba-2.8b
+    model_name = "state-spaces/mamba-370m"  # Using 370M parameter model
     print(f"\nLoading model from {model_name}...")
     
     # Create config with correct vocabulary size
@@ -457,6 +523,35 @@ def main():
     # Add the custom compute_loss method to the trainer
     trainer.compute_loss = compute_loss.__get__(trainer)
 
+    # Initialize wandb if not disabled
+    if not args.disable_wandb:
+        print("\n=== Initializing Weights & Biases ===")
+        try:
+            # First check if we're logged in
+            if wandb.api.api_key is None:
+                print("WARNING: No wandb API key found. Please run 'wandb login' first.")
+                print("Continuing without wandb logging...")
+            else:
+                wandb_run = wandb.init(
+                    project="state-tracking",
+                    entity="morrisyau95",  # Updated to match your actual username
+                    config={
+                        "model": model_name,
+                        "num_items": args.num_items,
+                        "supervision_type": args.supervision_type,
+                        "max_len": args.max_len,
+                        "batch_size": args.batch_size,
+                        "epochs": args.epochs,
+                        "learning_rate": trainer.args.learning_rate,
+                        "early_stopping": args.early_stopping,
+                    }
+                )
+                print(f"Wandb run initialized successfully with ID: {wandb_run.id}")
+                print(f"View run at: {wandb_run.get_url()}")
+        except Exception as e:
+            print(f"Error initializing wandb: {e}")
+            print("Continuing without wandb logging...")
+
     # Train the model
     trainer.train()
     
@@ -466,6 +561,12 @@ def main():
     # Save model and tokenizer
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+
+    # Close wandb run if it was initialized
+    if not args.disable_wandb and 'wandb_run' in locals():
+        print("\n=== Finalizing Weights & Biases ===")
+        wandb_run.finish()
+        print("Wandb run completed and synced")
 
 if __name__ == "__main__":
     main() 
