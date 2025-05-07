@@ -66,10 +66,6 @@ class PermutationDataset(torch.utils.data.Dataset):
         self.input_ids = input_ids
         self.attention_mask = attention_mask
         self.state_seq = state_seq
-        print("\nDebug: PermutationDataset Initialization")
-        print("input_ids shape:", input_ids.shape)
-        print("attention_mask shape:", attention_mask.shape)
-        print("state_seq shape:", state_seq.shape)
         
     def __len__(self):
         return len(self.input_ids)
@@ -80,8 +76,6 @@ class PermutationDataset(torch.utils.data.Dataset):
             attention_mask=self.attention_mask[idx],
             state_seq=self.state_seq[idx]
         )
-        print(f"\nDebug: PermutationDataset __getitem__ for idx {idx}")
-        print("Returned item keys:", item.keys())
         return item
 
 def setup_data_collator(args, tokenizer, state_tokens, parity=None):
@@ -94,10 +88,6 @@ def setup_data_collator(args, tokenizer, state_tokens, parity=None):
             self.label_key = label_key
             
         def __call__(self, features):
-            print("\nDebug: MambaDataCollator __call__")
-            print("Number of features:", len(features))
-            print("First feature keys:", features[0].keys() if features else "No features")
-            
             # Create batch from features - only include input_ids and state_seq
             batch = {
                 'input_ids': torch.stack([f['input_ids'] for f in features]),
@@ -162,6 +152,7 @@ def prepare_dataset(args, debug=False):
     state_tokens = {state.permutation: state.to_string() for state in task.states}
     action_tokens = {action.permutation: action.to_string() for action in task.actions}
     tokenizer = setup_tokenizer("mamba", state_tokens, action_tokens)
+    print(f"\nVocabulary size: {len(tokenizer)} tokens")
     
     # Tokenize stories and convert to tensors
     def process_batch(batch):
@@ -178,11 +169,6 @@ def prepare_dataset(args, debug=False):
         # Convert state sequences to tensors
         state_seqs = torch.stack([torch.tensor(item['state_seq']) for item in batch])
         
-        print("\nDebug: process_batch")
-        print("tokenized keys:", tokenized.keys())
-        print("tokenized shapes:", {k: v.shape for k, v in tokenized.items()})
-        print("state_seqs shape:", state_seqs.shape)
-        
         return PermutationDataset(
             input_ids=tokenized['input_ids'],
             attention_mask=tokenized['attention_mask'],
@@ -194,14 +180,6 @@ def prepare_dataset(args, debug=False):
     
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Eval dataset size: {len(eval_dataset)}")
-    
-    # Debug print
-    print("\nDebug: Dataset Sample")
-    sample = train_dataset[0]
-    print("Sample keys:", sample.keys())
-    print("Sample input_ids:", sample['input_ids'])
-    print("Sample attention_mask:", sample['attention_mask'])
-    print("Sample state_seq:", sample['state_seq'])
     
     return train_dataset, eval_dataset
 
@@ -283,6 +261,32 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     
     return (loss, outputs) if return_outputs else loss
 
+def save_checkpoint(model, tokenizer, output_dir, checkpoint_name):
+    """Save a checkpoint with the given name."""
+    checkpoint_dir = os.path.join(output_dir, f"checkpoint-{checkpoint_name}")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Save model
+    save_model_with_shared_tensors(model, checkpoint_dir)
+    
+    # Save tokenizer
+    tokenizer.save_pretrained(checkpoint_dir)
+    
+    print(f"Saved checkpoint to {checkpoint_dir}")
+
+def load_checkpoint(model, tokenizer, checkpoint_dir):
+    """Load a checkpoint from the given directory."""
+    print(f"Loading checkpoint from {checkpoint_dir}")
+    
+    # Load model state dict
+    state_dict = torch.load(os.path.join(checkpoint_dir, "pytorch_model.bin"))
+    model.load_state_dict(state_dict)
+    
+    # Load tokenizer
+    tokenizer = tokenizer.from_pretrained(checkpoint_dir)
+    
+    return model, tokenizer
+
 def main():
     """Main function."""
     args = parse_arguments()
@@ -314,16 +318,22 @@ def main():
     
     # Handle checkpoint loading
     if args.from_checkpoint is not None:
+        # from_checkpoint is the max_len of the previous checkpoint
         checkpoint_root = root_output + f"/mamba_{args.from_checkpoint}"
+        print('checkpoint_root:', checkpoint_root)
         if os.path.exists(checkpoint_root):
             ckpt_subdirs = [d for d in os.listdir(checkpoint_root) if d.startswith("checkpoint-") and d.split("-")[-1].isdigit()]
+            print('ckpt_subdirs:', ckpt_subdirs)
             if ckpt_subdirs:
                 latest_ckpt = max(ckpt_subdirs, key=lambda d: int(d.split("-")[-1]))
                 args.from_checkpoint = os.path.join(checkpoint_root, latest_ckpt)
             else:
+                print('set to None because no checkpoint found')
                 args.from_checkpoint = None
         else:
+            print('set to None because no checkpoint found 2')
             args.from_checkpoint = None
+    print('args.from_checkpoint:', args.from_checkpoint)
     
     # Set up determinism
     if args.full_determinism:
@@ -368,6 +378,10 @@ def main():
         device="cuda" if torch.cuda.is_available() else "cpu",
         dtype=torch.bfloat16 if args.use_bfloat16 else torch.float32,
     )
+    
+    # Load from checkpoint if specified
+    if args.from_checkpoint:
+        model, tokenizer = load_checkpoint(model, tokenizer, args.from_checkpoint)
     
     # Set up data collator
     data_collator = setup_data_collator(args, tokenizer, state_tokens, parity)
@@ -443,7 +457,13 @@ def main():
     # Add the custom compute_loss method to the trainer
     trainer.compute_loss = compute_loss.__get__(trainer)
 
+    # Train the model
     trainer.train()
+    
+    # Save final checkpoint
+    save_checkpoint(model, tokenizer, args.output_dir, "final")
+    
+    # Save model and tokenizer
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 
