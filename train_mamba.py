@@ -11,6 +11,7 @@ from transformers import (
     TrainingArguments,
     EarlyStoppingCallback,
     PreTrainedTokenizerFast,
+    TrainerCallback,
 )
 from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel, MambaConfig
 from utils.data_loaders import ChunkedDataset
@@ -93,7 +94,6 @@ def setup_data_collator(args, tokenizer, state_tokens, parity=None):
             # Create batch from features - only include input_ids and state_seq
             batch = {
                 'input_ids': torch.stack([f['input_ids'] for f in features]),
-                'state_seq': torch.stack([f['state_seq'] for f in features])
             }
             
             # Create labels for direct supervision
@@ -201,6 +201,88 @@ def save_model_with_shared_tensors(model, output_dir, _internal_call=False):
             with open(os.path.join(output_dir, "config.json"), "w") as f:
                 json.dump(config_dict, f, indent=2)
 
+def evaluate_model(model, eval_dataset, batch_size, data_collator=None):
+    """Simple evaluation function that computes metrics on the eval dataset."""
+    model.eval()
+    total_loss = 0
+    total_errors = 0
+    total_tokens = 0
+    
+    # Get the device the model is on
+    device = next(model.parameters()).device
+    print(f"Model is on device: {device}")
+    
+    # Create a simple dataloader with the data collator
+    eval_dataloader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=data_collator if data_collator is not None else None
+    )
+    
+    with torch.no_grad():
+        for batch in eval_dataloader:
+            # Move batch to the same device as the model
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            
+            # Forward pass - Mamba only needs input_ids
+            outputs = model(input_ids=batch['input_ids'])
+            logits = outputs.logits
+            
+            # Shift logits and labels for next token prediction
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = batch['labels'][..., 1:].contiguous()
+            
+            # Compute loss
+            loss_fct = torch.nn.CrossEntropyLoss()
+            loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.reshape(-1))
+            total_loss += loss.item()
+            
+            # Compute error rate
+            predictions = torch.argmax(shift_logits, dim=-1)
+            num_errors = (predictions != shift_labels).sum().item()
+            total_errors += num_errors
+            total_tokens += shift_labels.numel()
+    
+    # Compute average metrics
+    avg_loss = total_loss / len(eval_dataloader)
+    error_rate = total_errors / total_tokens if total_tokens > 0 else 1.0
+    
+    model.train()
+    return {
+        "eval_loss": avg_loss,
+        "eval_error_rate": error_rate,
+        "eval_num_errors": total_errors
+    }
+
+class PrintMetricsCallback(TrainerCallback):
+    def __init__(self, trainer, eval_steps=100):
+        self.eval_steps = eval_steps
+        self.trainer = trainer
+        print("PrintMetricsCallback initialized with trainer")
+        
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Print training metrics and run evaluation periodically."""
+        if logs is not None and "loss" in logs:
+            print(f"Step {state.global_step}: loss = {logs['loss']:.4f}")
+            
+            if state.global_step % self.eval_steps == 0:
+                print(f"\n=== Evaluation at step {state.global_step} ===")
+                try:
+                    metrics = evaluate_model(
+                        self.trainer.model,
+                        self.trainer.eval_dataset,
+                        self.trainer.args.per_device_eval_batch_size,
+                        data_collator=self.trainer.data_collator
+                    )
+                    print("Metrics:", metrics)
+                except Exception as e:
+                    print(f"Error during evaluation: {e}")
+                    print("Trainer state:", self.trainer is not None)
+                    if self.trainer is not None:
+                        print("Model state:", self.trainer.model is not None)
+                        print("Eval dataset state:", self.trainer.eval_dataset is not None)
+
 def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator):
     """Set up the trainer with the appropriate arguments."""
     print("Setting up trainer")
@@ -222,7 +304,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         warmup_steps=500,
         weight_decay=0.01,
         logging_dir='./logs',
-        logging_steps=100,
+        logging_steps=10,  # Log more frequently to get training loss
         save_steps=500 if not args.save_all_checkpoints else args.save_all_checkpoints,
         save_total_limit=None if args.save_all_checkpoints else 1,
         report_to="none" if args.disable_wandb else "wandb",
@@ -246,6 +328,11 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         data_collator=data_collator,
         compute_metrics=compute_metrics,
     )
+    
+    # Add metrics printing callback with trainer reference
+    callback = PrintMetricsCallback(trainer=trainer, eval_steps=100)
+    trainer.add_callback(callback)
+    print("Callback added to trainer")
     
     # Override the save_model method
     original_save_model = trainer.save_model
@@ -448,12 +535,6 @@ def main():
     tokenizer = setup_tokenizer("mamba", state_tokens, action_tokens)
     
     # Load or initialize Mamba model
-    # Available Mamba model sizes:
-    # - state-spaces/mamba-130m (default)
-    # - state-spaces/mamba-370m
-    # - state-spaces/mamba-790m
-    # - state-spaces/mamba-1.4b
-    # - state-spaces/mamba-2.8b
     model_name = "state-spaces/mamba-370m"  # Using 370M parameter model
     print(f"\nLoading model from {model_name}...")
     
@@ -515,7 +596,7 @@ def main():
             train_dataset, eval_dataset = prepare_dataset(args, debug=args.debug)
             trainer = setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_collator)
             
-            metrics = trainer.evaluate()
+            metrics = evaluate_model(model, eval_dataset, args.batch_size, data_collator)
             print("\n=== Evaluation metrics ===")
             print("metrics:", metrics)
             
@@ -586,6 +667,11 @@ def main():
 
     # Train the model
     trainer.train()
+    
+    # Evaluate after training
+    print("\n=== Final Evaluation ===")
+    metrics = evaluate_model(model, eval_dataset, args.batch_size, data_collator)
+    print("Final metrics:", metrics)
     
     # Save final checkpoint
     save_checkpoint(model, tokenizer, args.output_dir, "final")
