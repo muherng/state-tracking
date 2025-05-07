@@ -49,62 +49,80 @@ def parse_arguments():
     parser.add_argument("--eval_ratio", type=float, default=0.01)
     return parser.parse_args()
 
-def setup_data_collator(args, tokenizer, state_tokens, parity=None):
-    """Set up the data collator based on the supervision type."""
-    class MambaDataCollator:
-        def __init__(self, tokenizer, max_len):
-            self.tokenizer = tokenizer
-            self.max_len = max_len
-            
-        def __call__(self, features):
-            # print("\nDebug: Data Collator")
-            # print("Number of features:", len(features))
-            # print("First feature type:", type(features[0]))
-            # print("First feature keys:", features[0].keys() if isinstance(features[0], dict) else "Not a dict")
-            # print("First feature content:", features[0])
-            
-            # Stack the tensors from the features
-            try:
-                batch = {
-                    'input_ids': torch.stack([f['input_ids'] for f in features])
-                }
-                
-                # print("\nDebug: Created batch")
-                # print("Batch keys:", batch.keys())
-                # print("Batch shapes:", {k: v.shape for k, v in batch.items()})
-                
-                return batch
-                
-            except KeyError as e:
-                print(f"\nError: Missing key {e}")
-                print("Available keys in first feature:", features[0].keys() if isinstance(features[0], dict) else "Not a dict")
-                raise
-
-    return MambaDataCollator(tokenizer, args.max_len)
+class DatasetItem:
+    def __init__(self, input_ids, attention_mask, state_seq):
+        self.input_ids = input_ids
+        self.attention_mask = attention_mask
+        self.state_seq = state_seq
+    
+    def __getitem__(self, key):
+        return getattr(self, key)
+    
+    def keys(self):
+        return ['input_ids', 'attention_mask', 'state_seq']
 
 class PermutationDataset(torch.utils.data.Dataset):
     def __init__(self, input_ids, attention_mask, state_seq):
         self.input_ids = input_ids
         self.attention_mask = attention_mask
         self.state_seq = state_seq
-        # print("\nDebug: PermutationDataset Initialization")
-        # print("input_ids shape:", input_ids.shape)
-        # print("attention_mask shape:", attention_mask.shape)
-        # print("state_seq shape:", state_seq.shape)
+        print("\nDebug: PermutationDataset Initialization")
+        print("input_ids shape:", input_ids.shape)
+        print("attention_mask shape:", attention_mask.shape)
+        print("state_seq shape:", state_seq.shape)
         
     def __len__(self):
         return len(self.input_ids)
     
     def __getitem__(self, idx):
-        item = {
-            'input_ids': self.input_ids[idx],
-            'attention_mask': self.attention_mask[idx],
-            'state_seq': self.state_seq[idx],
-            'labels': self.input_ids[idx]  # For now, use input_ids as labels
-        }
-        # print(f"\nDebug: PermutationDataset __getitem__ for idx {idx}")
-        # print("Returned item keys:", item.keys())
+        item = DatasetItem(
+            input_ids=self.input_ids[idx],
+            attention_mask=self.attention_mask[idx],
+            state_seq=self.state_seq[idx]
+        )
+        print(f"\nDebug: PermutationDataset __getitem__ for idx {idx}")
+        print("Returned item keys:", item.keys())
         return item
+
+def setup_data_collator(args, tokenizer, state_tokens, parity=None):
+    """Set up the data collator based on the supervision type."""
+    class MambaDataCollator:
+        def __init__(self, tokenizer, max_len, state_tokens, label_key="state_seq"):
+            self.tokenizer = tokenizer
+            self.max_len = max_len
+            self.state_tokens = state_tokens
+            self.label_key = label_key
+            
+        def __call__(self, features):
+            print("\nDebug: MambaDataCollator __call__")
+            print("Number of features:", len(features))
+            print("First feature keys:", features[0].keys() if features else "No features")
+            
+            # Create batch from features - only include input_ids and state_seq
+            batch = {
+                'input_ids': torch.stack([f['input_ids'] for f in features]),
+                'state_seq': torch.stack([f['state_seq'] for f in features])
+            }
+            
+            # Create labels for direct supervision
+            label_seq = [
+                " ".join([self.state_tokens[tuple(item.tolist())] for item in f[self.label_key]])
+                for f in features
+            ]
+            labels = self.tokenizer(
+                label_seq,
+                padding='max_length',
+                truncation=True,
+                max_length=self.max_len,
+                return_tensors="pt"
+            )["input_ids"]
+            
+            # Make labels same shape as input_ids
+            batch["labels"] = labels[:, :batch["input_ids"].size(1)]
+            
+            return batch
+
+    return MambaDataCollator(tokenizer, args.max_len, state_tokens, "state_seq")
 
 def prepare_dataset(args, debug=False):
     """Prepare the dataset for training."""
@@ -184,7 +202,6 @@ def prepare_dataset(args, debug=False):
     print("Sample input_ids:", sample['input_ids'])
     print("Sample attention_mask:", sample['attention_mask'])
     print("Sample state_seq:", sample['state_seq'])
-    print("Sample labels:", sample['labels'])
     
     return train_dataset, eval_dataset
 
@@ -250,7 +267,7 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     """
     Custom loss computation for Mamba model
     """
-    # Get model outputs
+    # Get model outputs - Mamba doesn't use attention_mask
     outputs = model(input_ids=inputs['input_ids'])
     
     # Get logits from the last hidden state
