@@ -635,6 +635,10 @@ def main():
         plot_data_dir = os.path.join(args.output_dir, "plot_data")
         os.makedirs(plot_data_dir, exist_ok=True)
 
+        # Create plots directory
+        plots_dir = os.path.join(args.output_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+
         # Save raw data
         data = {
             "model": "mamba",
@@ -648,7 +652,7 @@ def main():
             json.dump(data, f)
         print(f"\nData saved → {data_path}")
 
-        plot_path = os.path.join(args.output_dir, f"length_generalisation_loss_{timestamp}.png")
+        plot_path = os.path.join(plots_dir, f"length_generalisation_loss_{timestamp}.png")
         plt.savefig(plot_path, bbox_inches="tight")
         print(f"\nLoss plot saved → {plot_path}")
 
@@ -665,7 +669,7 @@ def main():
             plt.title(f"Mamba Length‑generalisation error rate")
             plt.grid(True)
 
-            plot_path = os.path.join(args.output_dir, f"length_generalisation_error_{timestamp}.png")
+            plot_path = os.path.join(plots_dir, f"length_generalisation_error_{timestamp}.png")
             plt.savefig(plot_path, bbox_inches="tight")
             print(f"\nError rate plot saved → {plot_path}")
 
