@@ -82,51 +82,6 @@ def collate_fn(batch):
     labels = torch.stack([item["labels"] for item in batch])
     return {"input_ids": input_ids, "labels": labels}
 
-# -----------------------------------------------------------------------------
-# Trainer Callbacks (unchanged)
-# -----------------------------------------------------------------------------
-""" class PrintLossCallback(TrainerCallback):
-    def __init__(self):
-        self.best_training_loss = float('inf')
-        self.best_eval_loss = float('inf')
-        self.last_eval_loss = None
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        if state.global_step % 100 != 0:  # Changed from 10000 to 100 for more frequent logging
-            return
-        if logs is None:
-            return
-        # Retrieve epoch from the state, if available
-        epoch = getattr(state, "epoch", None)
-        if "loss" in logs:
-            current_loss = logs["loss"]
-            if isinstance(current_loss, torch.Tensor):
-                current_loss = current_loss.item()
-            if current_loss < self.best_training_loss:
-                self.best_training_loss = current_loss
-            training_perplexity = math.exp(current_loss) if current_loss < 100 else float('inf')
-        else:
-            current_loss = None
-            training_perplexity = None
-        if "eval_loss" in logs:
-            current_eval_loss = logs["eval_loss"]
-            if isinstance(current_eval_loss, torch.Tensor):
-                current_eval_loss = current_eval_loss.item()
-            self.last_eval_loss = current_eval_loss
-            if current_eval_loss < self.best_eval_loss:
-                self.best_eval_loss = current_eval_loss
-            eval_perplexity = math.exp(current_eval_loss) if current_eval_loss < 100 else float('inf')
-        else:
-            current_eval_loss = self.last_eval_loss
-            eval_perplexity = math.exp(current_eval_loss) if current_eval_loss is not None and current_eval_loss < 100 else float('inf')
-        out_str = f"Step {state.global_step}: "
-        if epoch is not None: 
-            out_str += f"Epoch {epoch} | "
-        if current_loss is not None:
-            out_str += f"Training Loss: {current_loss:.4f} (Best: {self.best_training_loss:.4f}, Perp: {training_perplexity:.4f})"
-        if current_eval_loss is not None:
-            out_str += f" | Eval Loss: {current_eval_loss:.4f} (Best: {self.best_eval_loss:.4f}, Perp: {eval_perplexity:.4f})"
-        print(out_str) """
 
 class CustomTrainer(Trainer):
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
@@ -275,13 +230,24 @@ class TransformerScanModel(nn.Module):
         else: 
             P,_ = self.compute_sequential_prefix(input_ids, debug=False)
             #print("P shape: ", P.shape)
+        debug = True
+        print('DEBUG: vectorized prefix scan')
+        if debug: 
+            P1 = self.vectorized_prefix_scan(level0, dummy, debug=False)
+            P2,_ = self.compute_sequential_prefix(input_ids, debug=False)
+            exit = False
+            for i in range(num_chunks):
+                if not torch.allclose(P1[:,i,:,:], P2[:,i,:,:], atol=1e-4):
+                    print(f'Failed at chunk {i}')
+                    exit = True
+            if exit:     
+                raise ValueError(f"Assert failed: vectorized prefix scan does not match sequential prefix scan")
 
         expected_dummy = dummy[0]
         actual_dummy = P[:, 0, :, :]
         assert torch.allclose(actual_dummy, expected_dummy, atol=1e-4), (
             "Assert failed: P[:,0,:,:] does not match dummy"
         )
-        debug = False
         if debug: 
             expected = level0[0][:,:self.chunk_size,:]
             actual = P[:, 1, :, :]
