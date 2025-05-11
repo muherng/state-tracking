@@ -44,7 +44,7 @@ def parse_arguments():
     parser.add_argument("--full_determinism", action="store_true", default=False)
     parser.add_argument("--early_stopping", action="store_true", default=True)
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
-    parser.add_argument("--disable_wandb", type=bool, default=True, help="Set to False to enable wandb logging")
+    parser.add_argument("--disable_wandb", type=bool, default=False, help="Set to False to enable wandb logging")
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--num_stories", type=int, default=10000)
     parser.add_argument("--generate_dataset", action="store_true", default=False)

@@ -55,7 +55,7 @@ def parse_arguments():
     parser.add_argument("--full_determinism", action="store_true", default=False)
     parser.add_argument("--early_stopping", action="store_true", default=True)
     parser.add_argument("--is_parity_cur", action="store_true", default=False)
-    parser.add_argument("--disable_wandb", action="store_true", default=True)
+    parser.add_argument("--disable_wandb", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--full_tree", action="store_true", default=True)
     parser.add_argument("--chunk_size", type=int, default=64)
@@ -233,7 +233,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         per_device_eval_batch_size=args.batch_size,
         save_steps=500 if not args.save_all_checkpoints else args.save_all_checkpoints,
         save_strategy="steps",
-        save_total_limit=None if args.save_all_checkpoints else 1,
+        save_total_limit=2,  # Keep only the last 2 checkpoints
         logging_dir='./logs',
         logging_steps=100,
         evaluation_strategy="steps",
@@ -249,7 +249,7 @@ def setup_trainer(args, model, tokenizer, train_dataset, eval_dataset, data_coll
         full_determinism=args.full_determinism,
         metric_for_best_model="eval_loss" if args.early_stopping else None,
         greater_is_better=False if args.early_stopping else True,
-        load_best_model_at_end=True if args.early_stopping else False,
+        load_best_model_at_end=False,  # Changed to False to prevent checkpoint comparison issues
         prediction_loss_only=False,  # Important: we want the full model outputs
     )
     
@@ -287,18 +287,21 @@ def main():
     print('args.max_len:', args.max_len)
     root_output = args.output_dir
     args.output_dir = args.output_dir + f"/{args.model}_{args.chunk_size}_{args.max_len}"
+    
+    # Ensure output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
-
+    
+    # Create a dummy checkpoint directory to prevent the error
+    dummy_checkpoint = os.path.join(args.output_dir, "checkpoint-0")
+    os.makedirs(dummy_checkpoint, exist_ok=True)
+    
     # Set up dataset directory based on max_len
-    # (For instance, if training on max_len=4, then dataset_dir becomes "datasets/permutation_4")
     dataset_dir = os.path.join("datasets_new", f"permutation_{args.num_items}_{args.max_len}")
     
     # If the dataset does not already exist, generate it using the simulation function:
     if not os.path.exists(dataset_dir) or args.generate_dataset:
         print(f"Dataset for max_len={args.max_len} not found. Generating dataset...")
-        # You might want to adjust these parameters as needed.
         task = PermutationTask(num_items=args.num_items)
-        # Here we use story_length as the max_len (or map it as needed)
         num_steps = max(args.max_len,16)
         _stories, _states = task.simulate(
             steps=num_steps,  

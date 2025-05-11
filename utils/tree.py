@@ -112,19 +112,31 @@ class CustomTrainer(Trainer):
 class T0(nn.Module):
     """
     T0: Initial embedding module.
+    Matches GPT2LMHeadModel's initial embedding behavior.
     """
-    def __init__(self, config, chunk_size):
+    def __init__(self, config):
         super().__init__()
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        self.wpe = nn.Embedding(chunk_size, config.n_embd)
-        self.chunk_size = chunk_size
+        self.wpe = nn.Embedding(config.n_positions, config.n_embd)
+        self.drop = nn.Dropout(config.embd_pdrop)
 
     def forward(self, input_ids):
-        token_emb = self.wte(input_ids)                   # (batch, seq_len, hidden_dim)
+        # Get sequence length from input_ids
         seq_len = input_ids.size(1)
-        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
-        pos_emb = self.wpe(positions)                      
-        return token_emb + pos_emb
+        
+        # Get token embeddings
+        token_emb = self.wte(input_ids)  # (batch, seq_len, hidden_dim)
+        
+        # Get position embeddings
+        position_ids = torch.arange(seq_len, dtype=torch.long, device=input_ids.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        pos_emb = self.wpe(position_ids)
+        
+        # Combine embeddings and apply dropout
+        embeddings = token_emb + pos_emb
+        embeddings = self.drop(embeddings)
+        
+        return embeddings
 
 class T1(nn.Module):
     """
@@ -145,20 +157,31 @@ class T2(nn.Module):
     """
     T2: Autoregressive prediction module.
     Uses GPT-2 blocks with a causal mask.
+    When chunk_size=1, this should be equivalent to GPT2LMHeadModel's transformer blocks.
     """
     def __init__(self, config, num_layers=2):
         super().__init__()
         self.blocks = nn.ModuleList([GPT2Block(config) for _ in range(num_layers)])
         self.ln_f = nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
-    def forward(self, x, causal_mask, past_key_values=None):
+        self.drop = nn.Dropout(config.resid_pdrop)  # Add residual dropout
+        
+    def forward(self, x, causal_mask=None, past_key_values=None):
+        # If no causal mask provided, create one
+        if causal_mask is None:
+            seq_length = x.size(1)
+            causal_mask = torch.tril(torch.ones(seq_length, seq_length, device=x.device)).unsqueeze(0).unsqueeze(0)
+            causal_mask = (1.0 - causal_mask) * -10000.0
+            
         new_past = []
         for i, block in enumerate(self.blocks):
             past = None if past_key_values is None else past_key_values[i]
             x, present = block(x, attention_mask=causal_mask, use_cache=True, output_attentions=False, layer_past=past)
             new_past.append(present)
+        
         x = self.ln_f(x)
+        x = self.drop(x)  # Apply residual dropout after layer norm
         return x, tuple(new_past)
-    
+
 def parallel_fold(S, op):
     """
     Given a list S of tensors, combine them in left-to-right order using op.
@@ -188,7 +211,7 @@ class TransformerScanModel(nn.Module):
         self.config = config
         self.chunk_size = chunk_size
         self.vocab_size = config.vocab_size
-        self.T0 = T0(config, chunk_size)
+        self.T0 = T0(config)
         self.T1 = T1(config, num_layers=T1_num_layers)
         self.T2 = T2(config, num_layers=T2_num_layers)
         self.T2_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -209,15 +232,17 @@ class TransformerScanModel(nn.Module):
         input_ids: (batch, seq_length), where seq_length is a multiple of chunk_size.
         Computes prefix states via a vectorized Blelloch scan and uses them for autoregressive prediction.
         """
-        #print('input_ids shape:', input_ids.shape)
         batch_size, seq_length = input_ids.shape
         num_chunks = seq_length // self.chunk_size
         
-        # Split input into chunks: shape (batch, num_chunks, chunk_size)
-        chunks = input_ids.view(batch_size, num_chunks, self.chunk_size)
+        # First compute embeddings for the entire sequence
+        all_embeddings = self.T0(input_ids)  # (batch, seq_length, hidden_dim)
         
-        # Compute T0 embeddings for each chunk.
-        level0 = [self.T0(chunks[:, i, :]) for i in range(num_chunks)]
+        # Then reshape into chunks
+        chunks = all_embeddings.view(batch_size, num_chunks, self.chunk_size, -1)
+        
+        # Create level0 list from chunks
+        level0 = [chunks[:, i, :, :] for i in range(num_chunks)]
         # Each element in level0: (batch, chunk_size, hidden_dim)
         
         # Define dummy state.
@@ -229,9 +254,7 @@ class TransformerScanModel(nn.Module):
             P = self.vectorized_prefix_scan(level0, dummy, debug=False)
         else: 
             P,_ = self.compute_sequential_prefix(input_ids, debug=False)
-            #print("P shape: ", P.shape)
-        debug = True
-        print('DEBUG: vectorized prefix scan')
+        debug = False
         if debug: 
             P1 = self.vectorized_prefix_scan(level0, dummy, debug=False)
             P2,_ = self.compute_sequential_prefix(input_ids, debug=False)
@@ -457,10 +480,16 @@ class TransformerScanModel(nn.Module):
         """
         batch_size, seq_length = input_ids.shape
         n = seq_length // self.chunk_size
-        # Reshape into chunks.
-        chunks = input_ids.view(batch_size, n, self.chunk_size)
-        # Apply initial embedding T0; wrap each state as (value, False)
-        level0 = [(self.T0(chunks[:, i, :]), False) for i in range(n)]
+        
+        # First compute embeddings for the entire sequence
+        all_embeddings = self.T0(input_ids)  # (batch, seq_length, hidden_dim)
+        
+        # Then reshape into chunks
+        chunks = all_embeddings.view(batch_size, n, self.chunk_size, -1)
+        
+        # Create level0 list from chunks and wrap each state as (value, False)
+        level0 = [(chunks[:, i, :, :], False) for i in range(n)]
+        
         # Create dummy as (tensor, True)
         dummy = (torch.zeros_like(level0[0][0]), True)
         prefix_list = []
