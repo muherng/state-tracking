@@ -38,7 +38,7 @@ def parse_arguments():
         "EleutherAI/pythia-6.9B", "EleutherAI/pythia-12B","tree"
     ])
     parser.add_argument("--data_dir", type=str, default="data")
-    parser.add_argument("--output_dir", type=str, default="saved_models")
+    parser.add_argument("--output_dir", type=str, default="checkpoints/tree_models_s5")
     parser.add_argument("--num_items", type=int, default=3, choices=[3, 5], help="Number of items for permutation task")
     parser.add_argument("--supervision_type", type=str, default="direct_state", choices=["direct_state", "direct_topic", "next_token"])
     parser.add_argument("--layerwise_supervision_type", type=str, default=None, help="File containing layerwise supervision keys")
